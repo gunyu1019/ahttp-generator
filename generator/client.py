@@ -28,7 +28,7 @@ class ClientGenerator:
         body = []
 
         # Add import statements
-        import_statements = self._create_imports(service_name, model_names)
+        import_statements = self._create_imports(service_name, model_names, extracted_data)
         body.extend(import_statements)
 
         # Create client facade class
@@ -41,17 +41,37 @@ class ClientGenerator:
 
         return module
 
-    def _create_imports(self, service_name: str, model_names: List[str]) -> List[ast.stmt]:
-        """Create import statements for facade layer."""
+    def _create_imports(self, service_name: str, model_names: List[str], extracted_data: Dict[str, Any]) -> List[ast.stmt]:
+        """Create import statements for facade layer with response model separation."""
         imports = []
 
         # Import HTTP implementation class
         http_class_name = service_name.replace('Service', 'HTTP')
         imports.append(self.ast_helper.create_relative_import('http', [http_class_name]))
 
-        # Import models that are used in method signatures
-        if model_names:
-            imports.append(self.ast_helper.create_relative_import('models', model_names))
+        # Collect all return types from operations to determine needed imports
+        paths = extracted_data.get('paths', [])
+        used_domain_models = set()
+        used_response_models = set()
+
+        for operation in paths:
+            response_info = operation.get('responses', {})
+            return_type_info = self._analyze_client_return_type(response_info)
+            model_name = return_type_info.get('model_name')
+
+            if model_name:
+                if model_name.endswith('Response'):
+                    used_response_models.add(model_name)
+                else:
+                    used_domain_models.add(model_name)
+
+        # Import domain models that are used
+        if used_domain_models:
+            imports.append(self.ast_helper.create_relative_import('models', sorted(used_domain_models)))
+
+        # Import response models that are used
+        if used_response_models:
+            imports.append(self.ast_helper.create_relative_import('models.response', sorted(used_response_models)))
 
         return imports
 
@@ -135,10 +155,11 @@ class ClientGenerator:
         return ast.fix_missing_locations(func_def)
 
     def _create_facade_operation_method(self, operation: Dict[str, Any]) -> ast.FunctionDef:
-        """Create facade operation method that delegates to HTTP implementation."""
+        """Create facade operation method that delegates to HTTP implementation with correct return types."""
         operation_id = operation.get('operation_id', 'operation')
         parameters = operation.get('parameters', [])
         request_body = operation.get('request_body')
+        response_info = operation.get('responses', {})
 
         # Sanitize operation method name to match HTTP layer
         sanitized_method_name = IdentifierSanitizer.to_snake_case(operation_id)
@@ -198,6 +219,10 @@ class ClientGenerator:
                 value=ast.Name(id='request_body', ctx=ast.Load())
             ))
 
+        # Analyze return type to match HTTP layer exactly
+        return_type_info = self._analyze_client_return_type(response_info)
+        return_annotation = return_type_info.get('annotation')
+
         # Create delegation call with await: return await self.http.sanitized_method_name(**kwargs)
         delegation_call = ast.Await(
             value=ast.Call(
@@ -223,7 +248,7 @@ class ClientGenerator:
             args=args,
             body=body,
             decorators=[],  # No decorators in facade layer
-            returns=ast.Name(id='dict', ctx=ast.Load())
+            returns=return_annotation
         )
 
     def _create_async_function_def(
@@ -256,3 +281,68 @@ class ClientGenerator:
 
         return ast.fix_missing_locations(func_def)
 
+    def _analyze_client_return_type(self, response_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze response info to determine correct return type for client methods."""
+        if not response_info:
+            return {
+                'annotation': ast.Name(id='dict', ctx=ast.Load()),
+                'model_name': None
+            }
+
+        response_type = response_info.get('response_type', 'json')
+        python_type = response_info.get('python_type', 'dict')
+        model_name = response_info.get('model_name')
+
+        # Case 1: Text response
+        if response_type == 'text':
+            return {
+                'annotation': ast.Name(id='str', ctx=ast.Load()),
+                'model_name': None
+            }
+
+        # Case 2: Binary response
+        elif response_type == 'binary':
+            return {
+                'annotation': ast.Name(id='bytes', ctx=ast.Load()),
+                'model_name': None
+            }
+
+        # Case 3: JSON response with Pydantic model
+        elif response_type == 'json' and model_name:
+            # Parse the return type to create appropriate AST annotation
+            return_annotation = self._create_type_annotation(python_type)
+            return {
+                'annotation': return_annotation,
+                'model_name': model_name
+            }
+
+        # Fallback to dict
+        return {
+            'annotation': ast.Name(id='dict', ctx=ast.Load()),
+            'model_name': None
+        }
+
+    def _create_type_annotation(self, type_str: str) -> ast.expr:
+        """Create AST type annotation from type string."""
+        if not type_str:
+            return ast.Name(id='dict', ctx=ast.Load())
+
+        # Handle List[Model] types
+        if type_str.startswith('List[') and type_str.endswith(']'):
+            inner_type = type_str[5:-1]  # Extract Model from List[Model]
+            return ast.Subscript(
+                value=ast.Name(id='List', ctx=ast.Load()),
+                slice=ast.Name(id=inner_type, ctx=ast.Load()),
+                ctx=ast.Load()
+            )
+
+        # Handle simple model names
+        elif type_str and type_str[0].isupper():  # Looks like a model name
+            return ast.Name(id=type_str, ctx=ast.Load())
+
+        # Handle basic types
+        elif type_str in ['str', 'int', 'float', 'bool', 'dict', 'bytes']:
+            return ast.Name(id=type_str, ctx=ast.Load())
+
+        # Fallback
+        return ast.Name(id='dict', ctx=ast.Load())
