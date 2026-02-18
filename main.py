@@ -86,7 +86,7 @@ def main():
 
     print("Generating http.py")
     http_generator = HTTPGenerator()
-    http_ast = http_generator.generate(extracted_data)
+    http_ast = http_generator.generate(extracted_data, model_names)
 
     print("Generating client.py")
     client_generator = ClientGenerator()

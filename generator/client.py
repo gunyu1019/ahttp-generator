@@ -1,76 +1,38 @@
 """
-ahttp_client service generator module.
-Generates service.py with ahttp_client declarative class.
+Client facade generator module.
+Generates client facade class from OpenAPI specification (Facade Layer).
 """
 
 import ast
-from typing import Dict, Any, List, Set
+from typing import Dict, Any, List
 
 from core.ast_helper import ASTHelper
-from core.type_mapper import TypeMapper
 
 
 class ClientGenerator:
-    """Generates ahttp_client service class."""
+    """Generates client facade class (High-Level user interface)."""
 
     def __init__(self):
         self.ast_helper = ASTHelper()
-        self.type_mapper = TypeMapper()
 
     def generate(self, extracted_data: Dict[str, Any], model_names: List[str]) -> ast.Module:
         """
-        Generate AST module for service.py.
-
-        Args:
-            extracted_data: Extracted OpenAPI data
-            model_names: List of generated model names
-
-        Returns:
-            AST module for service.py
+        Generate AST module for client.py (Facade Layer).
         """
+        service_name = extracted_data.get('service_name', 'ApiService')
+        servers = extracted_data.get('servers', ['https://api.example.com'])
+        base_url = servers[0]
+
         # Create module body
         body = []
 
-        # Track types used for imports
-        types_used = {'Session', 'request', 'Annotated'}
+        # Add import statements
+        import_statements = self._create_imports(service_name, model_names)
+        body.extend(import_statements)
 
-        # Pre-analyze operations to determine all needed types
-        paths = extracted_data.get('paths', [])
-        schemas = extracted_data.get('schemas', {})
-
-        # Check if we need pydantic_response_model decorator
-        needs_pydantic_decorator = False
-
-        for operation in paths:
-            # Check parameters
-            for param in operation.get('parameters', []):
-                _, annotation_source = self.type_mapper.map_parameter_type(param)
-                types_used.add(annotation_source)
-                # Add Optional if parameter is not required
-                if not param.get('required', False):
-                    types_used.add('Optional')
-
-            # Check request body
-            request_body = operation.get('request_body')
-            if request_body:
-                types_used.add('Body')
-
-            # Check return types and see if they are Pydantic models
-            response = operation.get('responses', {})
-            return_type = self._get_return_type(response, schemas, types_used)
-            if return_type and self._is_pydantic_model(return_type, model_names):
-                needs_pydantic_decorator = True
-
-        # Add pydantic_response_model to types_used if needed
-        if needs_pydantic_decorator:
-            types_used.add('pydantic_response_model')
-
-        # Add imports
-        body.extend(self._create_imports(model_names, types_used))
-
-        # Generate service class
-        service_class = self._create_service_class(extracted_data, types_used)
-        body.append(service_class)
+        # Create client facade class
+        client_class = self._create_client_class(service_name, base_url, extracted_data)
+        body.append(client_class)
 
         # Create module
         module = ast.Module(body=body, type_ignores=[])
@@ -78,297 +40,172 @@ class ClientGenerator:
 
         return module
 
-    def _create_imports(self, model_names: List[str], types_used: Set[str]) -> List[ast.stmt]:
-        """Create import statements."""
+    def _create_imports(self, service_name: str, model_names: List[str]) -> List[ast.stmt]:
+        """Create import statements for facade layer."""
         imports = []
-        
-        # Import typing components
-        typing_imports = []
-        if 'Annotated' in types_used:
-            typing_imports.append('Annotated')
-        if 'List' in types_used:
-            typing_imports.append('List')
-        if 'Dict' in types_used:
-            typing_imports.append('Dict')
-        if 'Any' in types_used:
-            typing_imports.append('Any')
-        if 'Optional' in types_used:
-            typing_imports.append('Optional')
-        
-        if typing_imports:
-            imports.append(self.ast_helper.create_import('typing', typing_imports))
-        
-        # Import HTTPClient from http module
-        imports.append(self.ast_helper.create_relative_import('http', ['HTTPClient']))
 
-        # Import ahttp_client components
-        ahttp_imports = ['request']
+        # Import HTTP implementation class
+        http_class_name = service_name.replace('Service', 'HTTP')
+        imports.append(self.ast_helper.create_relative_import('http', [http_class_name]))
 
-        # Check if we need parameter annotations
-        if 'Path' in types_used:
-            ahttp_imports.append('Path')
-        if 'Query' in types_used:
-            ahttp_imports.append('Query')
-        if 'Body' in types_used:
-            ahttp_imports.append('Body')
-        if 'Header' in types_used:
-            ahttp_imports.append('Header')
-        if 'pydantic_response_model' in types_used:
-            ahttp_imports.append('pydantic_response_model')
-
-        imports.append(self.ast_helper.create_import('ahttp_client', ahttp_imports))
-        
-        # Import models from relative path
+        # Import models that are used in method signatures
         if model_names:
             imports.append(self.ast_helper.create_relative_import('models', model_names))
-        
+
         return imports
 
-    def _create_service_class(self, extracted_data: Dict[str, Any], types_used: Set[str]) -> ast.ClassDef:
-        """Create the service class."""
-        service_name = extracted_data.get('service_name', 'ApiService')
-        servers = extracted_data.get('servers', ['https://api.example.com'])
-        base_url = servers[0]  # Use first server
+    def _create_client_class(self, service_name: str, base_url: str, extracted_data: Dict[str, Any]) -> ast.ClassDef:
+        """Create client facade class definition."""
+        # Generate client class name: ApiService -> ApiClient
+        client_class_name = service_name.replace('Service', 'Client')
+        http_class_name = service_name.replace('Service', 'HTTP')
 
         # Create class body
-        body = []
+        class_body = []
+
+        # Add docstring
+        docstring = ast.Expr(
+            value=ast.Constant(value=f"High-level client facade for {service_name} (User Interface Layer).")
+        )
+        class_body.append(docstring)
 
         # Add __init__ method
-        init_method = self._create_init_method(base_url)
-        body.append(init_method)
+        init_method = self._create_facade_init_method(http_class_name, base_url)
+        class_body.append(init_method)
 
-        # Add operation methods
+        # Add API operation methods (facade methods)
         paths = extracted_data.get('paths', [])
-        schemas = extracted_data.get('schemas', {})
 
         for operation in paths:
-            method_def = self._create_operation_method(operation, schemas, types_used)
-            body.append(method_def)
+            method_def = self._create_facade_operation_method(operation)
+            class_body.append(method_def)
 
-        # Create class
+        # Create class (no inheritance - standalone class)
         return self.ast_helper.create_class_def(
-            name=service_name,
-            bases=['HTTPClient'],
-            body=body
+            name=client_class_name,
+            bases=[],  # No inheritance
+            body=class_body
         )
 
-    def _create_init_method(self, base_url: str) -> ast.FunctionDef:
-        """Create __init__ method."""
-        # Create method body
+    def _create_facade_init_method(self, http_class_name: str, base_url: str) -> ast.FunctionDef:
+        """Create __init__ method for facade class with composition."""
+        # Create arguments: self, base_url with default value
+        args = [
+            self.ast_helper.create_arg('self'),
+            self.ast_helper.create_arg('base_url', ast.Name(id='str', ctx=ast.Load()))
+        ]
+
+        # Set default value for base_url
+        defaults = [self.ast_helper.create_string_constant(base_url)]
+
+        # Create method body: self.http = HTTPClass(base_url)
         body = [
-            ast.Expr(
+            ast.Assign(
+                targets=[ast.Attribute(
+                    value=ast.Name(id='self', ctx=ast.Load()),
+                    attr='http',
+                    ctx=ast.Store()
+                )],
                 value=ast.Call(
-                    func=self.ast_helper.create_attribute('super()', '__init__'),
-                    args=[self.ast_helper.create_string_constant(base_url)],
+                    func=ast.Name(id=http_class_name, ctx=ast.Load()),
+                    args=[ast.Name(id='base_url', ctx=ast.Load())],
                     keywords=[]
                 )
             )
         ]
 
-        # Create self argument
-        self_arg = self.ast_helper.create_arg('self')
-
-        return self.ast_helper.create_function_def(
+        # Create function definition with default values
+        func_def = ast.FunctionDef(
             name='__init__',
-            args=[self_arg],
-            body=body
+            args=ast.arguments(
+                posonlyargs=[],
+                args=args,
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=defaults
+            ),
+            body=body,
+            decorator_list=[],
+            returns=None
         )
 
-    def _create_operation_method(self, operation: Dict[str, Any], schemas: Dict[str, Any], types_used: Set[str]) -> ast.FunctionDef:
-        """Create a method for an API operation."""
+        return ast.fix_missing_locations(func_def)
+
+    def _create_facade_operation_method(self, operation: Dict[str, Any]) -> ast.FunctionDef:
+        """Create facade operation method that delegates to HTTP implementation."""
         operation_id = operation.get('operation_id', 'operation')
-        method = operation.get('method', 'GET')
-        path = operation.get('path', '/')
         parameters = operation.get('parameters', [])
         request_body = operation.get('request_body')
-        response = operation.get('responses', {})
 
-        # Create method arguments
+        # Create method arguments (clean interface without Annotated)
         args = [self.ast_helper.create_arg('self')]
+        call_keywords = []  # For delegation call
 
-        # Add path parameters
+        # Add path parameters with friendly names
         for param in parameters:
             if param['in'] == 'path':
-                param_type, annotation_source = self.type_mapper.map_parameter_type(param)
-                types_used.add(param_type)
-                types_used.add(annotation_source)
-
-                annotated_arg = self.ast_helper.create_annotated_arg(
-                    param['name'],
-                    param_type,
-                    annotation_source
-                )
-                args.append(annotated_arg)
+                param_name = param['name']
+                # Convert target_id -> target_channel_id for better UX
+                friendly_name = 'target_channel_id' if param_name == 'target_id' else param_name
+                
+                arg = self.ast_helper.create_arg(friendly_name, ast.Name(id='str', ctx=ast.Load()))
+                args.append(arg)
+                
+                # Map back to original parameter name for HTTP layer
+                call_keywords.append(ast.keyword(
+                    arg=param_name,  # Original parameter name for HTTP layer
+                    value=ast.Name(id=friendly_name, ctx=ast.Load())
+                ))
 
         # Add query parameters
         for param in parameters:
             if param['in'] == 'query':
-                param_type, annotation_source = self.type_mapper.map_parameter_type(param)
-                types_used.add(param_type)
-                types_used.add(annotation_source)
-
-                # Handle optional parameters
-                if not param.get('required', False):
-                    param_type = f'Optional[{param_type}]'
-                    types_used.add('Optional')
-
-                annotated_arg = self.ast_helper.create_annotated_arg(
-                    param['name'],
-                    param_type,
-                    annotation_source
-                )
-                args.append(annotated_arg)
+                param_name = param['name']
+                arg = self.ast_helper.create_arg(param_name, ast.Name(id='str', ctx=ast.Load()))
+                args.append(arg)
+                
+                # Add to delegation call
+                call_keywords.append(ast.keyword(
+                    arg=param_name,
+                    value=ast.Name(id=param_name, ctx=ast.Load())
+                ))
 
         # Add request body parameter
         if request_body:
-            body_schema = request_body.get('schema', {})
-
-            # Check if it's a schema reference
-            if '$ref' in body_schema:
-                # Use the referenced model directly
-                ref_path = body_schema['$ref']
-                if ref_path.startswith('#/components/schemas/'):
-                    model_name = ref_path.split('/')[-1]
-                    body_type = self.type_mapper.sanitize_schema_name(model_name)
-                else:
-                    body_type = 'dict'
-            elif 'properties' in body_schema:
-                # Use generated request model
-                request_model_name = self._generate_request_model_name(operation_id)
-                body_type = request_model_name
-            else:
-                body_type = 'dict'
-
-            types_used.add(body_type)
-            types_used.add('Body')
-
-            body_arg = self.ast_helper.create_annotated_arg('body', body_type, 'Body')
+            # Use friendly name for body parameter
+            body_arg = self.ast_helper.create_arg('request_body', ast.Name(id='dict', ctx=ast.Load()))
             args.append(body_arg)
+            
+            # Add to delegation call (HTTP layer expects 'body')
+            call_keywords.append(ast.keyword(
+                arg='body',  # HTTP layer expects 'body'
+                value=ast.Name(id='request_body', ctx=ast.Load())
+            ))
 
-        # Determine return type
-        return_type = self._get_return_type(response, schemas, types_used)
-        return_annotation = self._parse_return_type(return_type) if return_type else None
-
-        # Create decorators list
-        decorators = []
-
-        # Add pydantic_response_model decorator if return type is a Pydantic model
-        if return_type and self._is_pydantic_model(return_type, list(schemas.keys())):
-            # Extract model name from return type (handle List[Model] case)
-            model_name = self._extract_model_name(return_type)
-            if model_name:
-                pydantic_decorator = self.ast_helper.create_decorator(
-                    'pydantic_response_model',
-                    [ast.Name(id=model_name, ctx=ast.Load())]
-                )
-                decorators.append(pydantic_decorator)
-
-        # Add request decorator
-        request_decorator = self.ast_helper.create_decorator(
-            'request',
-            [
-                self.ast_helper.create_string_constant(method),
-                self.ast_helper.create_string_constant(path)
-            ]
+        # Create delegation call: return self.http.operation_method(**kwargs)
+        delegation_call = ast.Call(
+            func=ast.Attribute(
+                value=ast.Attribute(
+                    value=ast.Name(id='self', ctx=ast.Load()),
+                    attr='http',
+                    ctx=ast.Load()
+                ),
+                attr=operation_id,
+                ctx=ast.Load()
+            ),
+            args=[],  # No positional args, all are keywords
+            keywords=call_keywords
         )
-        decorators.append(request_decorator)
 
         # Create method body
-        body = [ast.Return(value=None)]
+        body = [ast.Return(value=delegation_call)]
 
         return self.ast_helper.create_function_def(
             name=operation_id,
             args=args,
             body=body,
-            decorators=decorators,
-            returns=return_annotation
+            decorators=[],  # No decorators in facade layer
+            returns=ast.Name(id='dict', ctx=ast.Load())
         )
-
-    def _get_return_type(self, response: Dict[str, Any], schemas: Dict[str, Any], types_used: Set[str]) -> str:
-        """Determine return type from response schema."""
-        response_schema = response.get('schema', {})
-
-        if not response_schema:
-            return None
-
-        return_type, _ = self.type_mapper.map_schema_to_type(response_schema, schemas)
-
-        # Add to types used
-        if 'List[' in return_type:
-            types_used.add('List')
-        if 'Dict[' in return_type:
-            types_used.add('Dict')
-        if 'Any' in return_type:
-            types_used.add('Any')
-
-        return return_type
-
-    def _parse_return_type(self, type_str: str) -> ast.expr:
-        """Parse return type string into AST expression."""
-        if '[' in type_str:
-            # Handle generic types
-            base_type, rest = type_str.split('[', 1)
-            inner_types = rest.rstrip(']')
-
-            if ',' in inner_types:
-                # Handle Dict[str, Any]
-                type_parts = [part.strip() for part in inner_types.split(',')]
-                inner_ast = ast.Tuple(
-                    elts=[self._parse_return_type(part) for part in type_parts],
-                    ctx=ast.Load()
-                )
-            else:
-                # Handle List[str]
-                inner_ast = self._parse_return_type(inner_types)
-
-            return ast.Subscript(
-                value=ast.Name(id=base_type, ctx=ast.Load()),
-                slice=inner_ast,
-                ctx=ast.Load()
-            )
-        else:
-            # Simple type
-            return ast.Name(id=type_str, ctx=ast.Load())
-
-    def _is_pydantic_model(self, type_str: str, model_names: List[str]) -> bool:
-        """Check if the type string represents a Pydantic model."""
-        # Extract the base model name from type string
-        model_name = self._extract_model_name(type_str)
-        return model_name in model_names if model_name else False
-
-    def _extract_model_name(self, type_str: str) -> str:
-        """Extract model name from type string (handles List[Model] -> Model)."""
-        if not type_str:
-            return None
-
-        # Handle List[ModelName] -> ModelName
-        if type_str.startswith('List[') and type_str.endswith(']'):
-            return type_str[5:-1]  # Remove 'List[' and ']'
-
-        # Handle simple model name
-        if type_str and type_str[0].isupper():  # Assuming model names start with uppercase
-            return type_str
-
-        return None
-
-    def _generate_request_model_name(self, operation_id: str) -> str:
-        """Generate request model name from operation ID."""
-        # Convert operation_id to PascalCase properly
-        # Handle both camelCase and snake_case
-        import re
-
-        # Split by underscores or camelCase boundaries
-        words = re.findall(r'[A-Z]*[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]+$|[0-9]+', operation_id)
-        if not words:
-            words = operation_id.split('_')
-
-        # Capitalize each word
-        pascal_case = ''.join(word.capitalize() for word in words if word)
-
-        # Add Request suffix if not present
-        if not pascal_case.endswith('Request'):
-            pascal_case += 'Request'
-
-        return pascal_case
-
-
