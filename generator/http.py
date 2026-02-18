@@ -249,7 +249,7 @@ class HTTPGenerator:
         # Create method body (pass statement for decorator-implemented methods)
         body = [ast.Pass()]
 
-        return self.ast_helper.create_function_def(
+        return self._create_async_function_def(
             name=sanitized_method_name,  # Use sanitized method name
             args=args,
             body=body,
@@ -570,4 +570,35 @@ class HTTPGenerator:
             pascal_case += 'Request'
 
         return pascal_case
+
+    def _create_async_function_def(
+        self,
+        name: str,
+        args: List[ast.arg],
+        body: List[ast.stmt],
+        decorators: List[ast.expr] = None,
+        returns: ast.expr = None
+    ) -> ast.AsyncFunctionDef:
+        """Create an async function definition."""
+        if decorators is None:
+            decorators = []
+
+        func_def = ast.AsyncFunctionDef(
+            name=name,
+            args=ast.arguments(
+                posonlyargs=[],
+                args=args,
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[]
+            ),
+            body=body,
+            decorator_list=decorators,
+            returns=returns
+        )
+
+        return ast.fix_missing_locations(func_def)
+
 

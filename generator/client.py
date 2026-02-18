@@ -198,28 +198,61 @@ class ClientGenerator:
                 value=ast.Name(id='request_body', ctx=ast.Load())
             ))
 
-        # Create delegation call: return self.http.sanitized_method_name(**kwargs)
-        delegation_call = ast.Call(
-            func=ast.Attribute(
-                value=ast.Attribute(
-                    value=ast.Name(id='self', ctx=ast.Load()),
-                    attr='http',
+        # Create delegation call with await: return await self.http.sanitized_method_name(**kwargs)
+        delegation_call = ast.Await(
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr='http',
+                        ctx=ast.Load()
+                    ),
+                    attr=sanitized_method_name,  # Use sanitized method name
                     ctx=ast.Load()
                 ),
-                attr=sanitized_method_name,  # Use sanitized method name
-                ctx=ast.Load()
-            ),
-            args=[],  # No positional args, all are keywords
-            keywords=call_keywords
+                args=[],  # No positional args, all are keywords
+                keywords=call_keywords
+            )
         )
 
         # Create method body
         body = [ast.Return(value=delegation_call)]
 
-        return self.ast_helper.create_function_def(
+        return self._create_async_function_def(
             name=sanitized_method_name,  # Use sanitized method name
             args=args,
             body=body,
             decorators=[],  # No decorators in facade layer
             returns=ast.Name(id='dict', ctx=ast.Load())
         )
+
+    def _create_async_function_def(
+        self,
+        name: str,
+        args: List[ast.arg],
+        body: List[ast.stmt],
+        decorators: List[ast.expr] = None,
+        returns: ast.expr = None
+    ) -> ast.AsyncFunctionDef:
+        """Create an async function definition."""
+        if decorators is None:
+            decorators = []
+
+        func_def = ast.AsyncFunctionDef(
+            name=name,
+            args=ast.arguments(
+                posonlyargs=[],
+                args=args,
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[]
+            ),
+            body=body,
+            decorator_list=decorators,
+            returns=returns
+        )
+
+        return ast.fix_missing_locations(func_def)
+
