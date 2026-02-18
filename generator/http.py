@@ -69,11 +69,11 @@ class HTTPGenerator:
         # Import ahttp_client Session and decorators
         ahttp_imports = ['Session', 'request', 'Body', 'Path', 'Query']
 
-        # Add pydantic_response_model if needed
-        if status_code_mapping or (model_names and len(model_names) > 0):
-            ahttp_imports.append('pydantic_response_model')
-
         imports.append(self.ast_helper.create_import('ahttp_client', ahttp_imports))
+
+        # Import pydantic_response_model from extension if needed
+        if status_code_mapping or (model_names and len(model_names) > 0):
+            imports.append(self.ast_helper.create_import('ahttp_client.extension', ['pydantic_response_model']))
 
         # Import models if any exist
         if model_names and len(model_names) > 0:
@@ -234,17 +234,20 @@ class HTTPGenerator:
                 decorators.append(pydantic_decorator)
 
         # Add request decorator
-        request_decorator = self.ast_helper.create_decorator(
-            'request',
-            [
+        request_decorator = ast.Call(
+            func=ast.Name(id='request', ctx=ast.Load()),
+            args=[
                 self.ast_helper.create_string_constant(method),
                 self.ast_helper.create_string_constant(path)
+            ],
+            keywords=[
+                ast.keyword(arg='directly_response', value=ast.Constant(value=True))
             ]
         )
         decorators.append(request_decorator)
 
-        # Create method body (empty return)
-        body = [ast.Return(value=None)]
+        # Create method body (pass statement for decorator-implemented methods)
+        body = [ast.Pass()]
 
         return self.ast_helper.create_function_def(
             name=sanitized_method_name,  # Use sanitized method name
