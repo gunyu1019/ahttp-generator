@@ -38,7 +38,7 @@ class HTTPGenerator:
         body = []
 
         # Add import statements
-        import_statements = self._create_imports(status_code_mapping, model_names)
+        import_statements = self._create_imports(status_code_mapping, model_names, extracted_data)
         body.extend(import_statements)
 
         # Create HTTP implementation class
@@ -51,7 +51,7 @@ class HTTPGenerator:
 
         return module
 
-    def _create_imports(self, status_code_mapping: Dict[int, str], model_names: List[str] = None) -> List[ast.stmt]:
+    def _create_imports(self, status_code_mapping: Dict[int, str], model_names: List[str] = None, extracted_data: Dict[str, Any] = None) -> List[ast.stmt]:
         """Create import statements including exception imports."""
         imports = []
 
@@ -64,10 +64,20 @@ class HTTPGenerator:
         # Add Optional if needed
         typing_imports.append('Optional')
 
+        # Add Tuple if there are query authentication schemes
+        security_schemes = extracted_data.get('security_schemes', []) if extracted_data else []
+        has_query_auth = any(scheme.get('target') == 'query' for scheme in security_schemes)
+        if has_query_auth:
+            typing_imports.append('Tuple')
+
         imports.append(self.ast_helper.create_import('typing', typing_imports))
 
         # Import ahttp_client Session and decorators
         ahttp_imports = ['Session', 'request', 'Body', 'Path', 'Query']
+
+        # Add RequestCore import if there are query authentication schemes
+        if has_query_auth:
+            ahttp_imports.append('RequestCore')
 
         imports.append(self.ast_helper.create_import('ahttp_client', ahttp_imports))
 
@@ -120,6 +130,13 @@ class HTTPGenerator:
         # Add __init__ method with security schemes support
         init_method = self._create_init_method(extracted_data)
         class_body.append(init_method)
+
+        # Add before_request hook method if there are query auth schemes
+        security_schemes = extracted_data.get('security_schemes', [])
+        query_schemes = [s for s in security_schemes if s.get('target') == 'query']
+        if query_schemes:
+            before_request_method = self._create_before_request_method(query_schemes)
+            class_body.append(before_request_method)
 
         # Add after_request hook method if there are error responses
         if status_code_mapping:
@@ -417,6 +434,99 @@ class HTTPGenerator:
             body=body,
             decorator_list=[],
             returns=None
+        )
+
+        return ast.fix_missing_locations(func_def)
+
+    def _create_before_request_method(self, query_schemes: List[Dict[str, Any]]) -> ast.AsyncFunctionDef:
+        """Create before_request hook method for query parameter authentication."""
+        # Create arguments: self, request: RequestCore, path: str
+        args = [
+            self.ast_helper.create_arg('self'),
+            self.ast_helper.create_arg('request', ast.Name(id='RequestCore', ctx=ast.Load())),
+            self.ast_helper.create_arg('path', ast.Name(id='str', ctx=ast.Load()))
+        ]
+
+        # Create method body
+        body = []
+
+        # Add query parameter injection for each query auth scheme
+        for scheme in query_schemes:
+            arg_name = scheme['arg_name']
+            key_name = scheme['key']
+
+            # Create if statement: if self.{arg_name}:
+            condition = ast.Attribute(
+                value=ast.Name(id='self', ctx=ast.Load()),
+                attr=arg_name,
+                ctx=ast.Load()
+            )
+
+            # Create assignment: request.params['{key_name}'] = self.{arg_name}
+            assignment = ast.Assign(
+                targets=[
+                    ast.Subscript(
+                        value=ast.Attribute(
+                            value=ast.Name(id='request', ctx=ast.Load()),
+                            attr='params',
+                            ctx=ast.Load()
+                        ),
+                        slice=ast.Constant(value=key_name),
+                        ctx=ast.Store()
+                    )
+                ],
+                value=ast.Attribute(
+                    value=ast.Name(id='self', ctx=ast.Load()),
+                    attr=arg_name,
+                    ctx=ast.Load()
+                )
+            )
+
+            # Add if statement to body
+            if_stmt = ast.If(
+                test=condition,
+                body=[assignment],
+                orelse=[]
+            )
+            body.append(if_stmt)
+
+        # Add return statement: return request, path
+        return_stmt = ast.Return(
+            value=ast.Tuple(
+                elts=[
+                    ast.Name(id='request', ctx=ast.Load()),
+                    ast.Name(id='path', ctx=ast.Load())
+                ],
+                ctx=ast.Load()
+            )
+        )
+        body.append(return_stmt)
+
+        # Create async function definition with return type annotation
+        func_def = ast.AsyncFunctionDef(
+            name='before_request',
+            args=ast.arguments(
+                posonlyargs=[],
+                args=args,
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[]
+            ),
+            body=body,
+            decorator_list=[],
+            returns=ast.Subscript(
+                value=ast.Name(id='Tuple', ctx=ast.Load()),
+                slice=ast.Tuple(
+                    elts=[
+                        ast.Name(id='RequestCore', ctx=ast.Load()),
+                        ast.Name(id='str', ctx=ast.Load())
+                    ],
+                    ctx=ast.Load()
+                ),
+                ctx=ast.Load()
+            )
         )
 
         return ast.fix_missing_locations(func_def)
@@ -723,7 +833,7 @@ class HTTPGenerator:
         # Create condition: if arg_name:
         condition = ast.Name(id=arg_name, ctx=ast.Load())
 
-        # Create the assignment based on target (header or cookie)
+        # Create the assignment based on target (header, cookie, or query)
         if target == 'header':
             # self.headers[key] = format_str.format(arg_name)
             if '{}' in format_str:
@@ -767,6 +877,19 @@ class HTTPGenerator:
                             ctx=ast.Load()
                         ),
                         slice=ast.Constant(value=key),
+                        ctx=ast.Store()
+                    )
+                ],
+                value=ast.Name(id=arg_name, ctx=ast.Load())
+            )
+
+        elif target == 'query':
+            # For query parameters, store as instance variable: self.{arg_name} = {arg_name}
+            assignment = ast.Assign(
+                targets=[
+                    ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr=arg_name,
                         ctx=ast.Store()
                     )
                 ],

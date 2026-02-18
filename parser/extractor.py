@@ -712,9 +712,14 @@ class OpenAPIExtractor:
             }
 
         elif key_location == 'query':
-            # Skip query parameters for global authentication as specified
-            print(f"Warning: Query parameter authentication for '{arg_name}' not supported in global scope - skipped")
-            return None
+            # Support query parameters via before_request hook
+            return {
+                'arg_name': arg_name,
+                'type': 'apiKey',
+                'target': 'query',
+                'key': key_name,
+                'format': '{}'
+            }
 
         else:
             print(f"Warning: Unknown API Key location '{key_location}' for '{arg_name}' - skipped")
