@@ -11,7 +11,7 @@ import os
 import pathlib
 from typing import Dict, Any
 
-from parser.loader import OpenAPILoader
+from core.loader import load_spec
 from parser.extractor import OpenAPIExtractor
 from generator.models import ModelsGenerator
 from generator.client import ClientGenerator
@@ -61,15 +61,14 @@ def main():
     parser = argparse.ArgumentParser(
         description='Generate Python package from OpenAPI specification'
     )
-    parser.add_argument('input_file', help='Path to OpenAPI JSON file')
+    parser.add_argument('input_file', help='Path to OpenAPI specification file (JSON, YAML, or XML)')
     parser.add_argument('output_dir', help='Output directory name for generated package')
 
     args = parser.parse_args()
 
     # Load and parse OpenAPI specification
     print(f"Loading OpenAPI specification from {args.input_file}")
-    loader = OpenAPILoader()
-    spec_data = loader.load(args.input_file)
+    spec_data = load_spec(args.input_file)
 
     print("Extracting OpenAPI components")
     extractor = OpenAPIExtractor()
