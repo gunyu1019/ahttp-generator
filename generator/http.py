@@ -7,6 +7,7 @@ import ast
 from typing import Dict, Any, List
 
 from core.ast_helper import ASTHelper
+from core.sanitizer import IdentifierSanitizer
 
 
 class HTTPGenerator:
@@ -140,27 +141,54 @@ class HTTPGenerator:
         for param in parameters:
             if param['in'] == 'path':
                 param_type, annotation_source = self._map_parameter_type(param)
-                annotated_arg = self.ast_helper.create_annotated_arg(
-                    param['name'],
-                    param_type,
-                    annotation_source
-                )
+                original_name = param['name']
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name)
+
+                # Check if we need custom_name
+                if IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
+                    # Use custom_name annotation
+                    annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
+                        sanitized_name,
+                        param_type,
+                        annotation_source,
+                        original_name
+                    )
+                else:
+                    # Use regular annotation
+                    annotated_arg = self.ast_helper.create_annotated_arg(
+                        sanitized_name,
+                        param_type,
+                        annotation_source
+                    )
                 args.append(annotated_arg)
 
         # Add query parameters with Annotated types
         for param in parameters:
             if param['in'] == 'query':
                 param_type, annotation_source = self._map_parameter_type(param)
+                original_name = param['name']
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name)
 
                 # Handle optional parameters
                 if not param.get('required', False):
                     param_type = f'Optional[{param_type}]'
 
-                annotated_arg = self.ast_helper.create_annotated_arg(
-                    param['name'],
-                    param_type,
-                    annotation_source
-                )
+                # Check if we need custom_name
+                if IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
+                    # Use custom_name annotation
+                    annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
+                        sanitized_name,
+                        param_type,
+                        annotation_source,
+                        original_name
+                    )
+                else:
+                    # Use regular annotation
+                    annotated_arg = self.ast_helper.create_annotated_arg(
+                        sanitized_name,
+                        param_type,
+                        annotation_source
+                    )
                 args.append(annotated_arg)
 
         # Add request body parameter with Annotated type

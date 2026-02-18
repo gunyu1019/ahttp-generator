@@ -7,6 +7,7 @@ import ast
 from typing import Dict, Any, List
 
 from core.ast_helper import ASTHelper
+from core.sanitizer import IdentifierSanitizer
 
 
 class ClientGenerator:
@@ -146,30 +147,37 @@ class ClientGenerator:
         # Add path parameters with friendly names
         for param in parameters:
             if param['in'] == 'path':
-                param_name = param['name']
-                # Convert target_id -> target_channel_id for better UX
-                friendly_name = 'target_channel_id' if param_name == 'target_id' else param_name
-                
+                original_name = param['name']
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name)
+
+                # Use more friendly names for common cases
+                if original_name == 'target_id':
+                    friendly_name = 'target_channel_id'
+                else:
+                    friendly_name = sanitized_name
+
                 arg = self.ast_helper.create_arg(friendly_name, ast.Name(id='str', ctx=ast.Load()))
                 args.append(arg)
                 
-                # Map back to original parameter name for HTTP layer
+                # Map back to sanitized parameter name for HTTP layer
                 call_keywords.append(ast.keyword(
-                    arg=param_name,  # Original parameter name for HTTP layer
+                    arg=sanitized_name,  # HTTP layer uses sanitized name
                     value=ast.Name(id=friendly_name, ctx=ast.Load())
                 ))
 
         # Add query parameters
         for param in parameters:
             if param['in'] == 'query':
-                param_name = param['name']
-                arg = self.ast_helper.create_arg(param_name, ast.Name(id='str', ctx=ast.Load()))
+                original_name = param['name']
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name)
+
+                arg = self.ast_helper.create_arg(sanitized_name, ast.Name(id='str', ctx=ast.Load()))
                 args.append(arg)
                 
-                # Add to delegation call
+                # Add to delegation call using sanitized name
                 call_keywords.append(ast.keyword(
-                    arg=param_name,
-                    value=ast.Name(id=param_name, ctx=ast.Load())
+                    arg=sanitized_name,  # HTTP layer uses sanitized name
+                    value=ast.Name(id=sanitized_name, ctx=ast.Load())
                 ))
 
         # Add request body parameter

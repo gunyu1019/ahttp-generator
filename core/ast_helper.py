@@ -212,5 +212,62 @@ class ASTHelper:
                 keywords=[]
             )
 
+    @staticmethod
+    def create_custom_name_annotation(component_type: str, original_name: str) -> ast.expr:
+        """
+        Create AST for Component.custom_name("original") annotation.
+
+        Args:
+            component_type: Component type (Query, Path, Body, etc.)
+            original_name: Original parameter name
+
+        Returns:
+            AST expression for Component.custom_name("original")
+        """
+        return ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id=component_type, ctx=ast.Load()),
+                attr='custom_name',
+                ctx=ast.Load()
+            ),
+            args=[ast.Constant(value=original_name)],
+            keywords=[]
+        )
+
+    @staticmethod
+    def create_annotated_arg_with_custom_name(
+        arg_name: str,
+        type_annotation: str,
+        component_type: str,
+        original_name: str
+    ) -> ast.arg:
+        """
+        Create annotated argument with custom_name.
+
+        Args:
+            arg_name: Sanitized argument name
+            type_annotation: Type annotation string
+            component_type: Component type (Query, Path, etc.)
+            original_name: Original parameter name
+
+        Returns:
+            AST argument with Annotated[Type, Component.custom_name("original")]
+        """
+        # Create Annotated[Type, Component.custom_name("original")]
+        annotation = ast.Subscript(
+            value=ast.Name(id='Annotated', ctx=ast.Load()),
+            slice=ast.Tuple(
+                elts=[
+                    ast.Name(id=type_annotation, ctx=ast.Load()),
+                    ASTHelper.create_custom_name_annotation(component_type, original_name)
+                ],
+                ctx=ast.Load()
+            ),
+            ctx=ast.Load()
+        )
+
+        arg = ast.arg(arg=arg_name, annotation=annotation)
+        return ast.fix_missing_locations(arg)
+
 
 
