@@ -47,6 +47,20 @@ class OpenAPIExtractor:
 
         extracted_data['error_responses'] = all_error_responses
 
+        # Collect inline response models from operations
+        inline_models = {}
+        for operation in extracted_data['paths']:
+            response_info = operation.get('responses', {})
+            inline_model = response_info.get('inline_model')
+            if inline_model:
+                model_name = inline_model['name']
+                model_schema = inline_model['schema']
+                inline_models[model_name] = model_schema
+
+        # Add inline models to schemas for model generation
+        if inline_models:
+            extracted_data['schemas'].update(inline_models)
+
         # Create status code to exception class mapping for HTTP hooks
         extracted_data['status_code_mapping'] = self._create_status_code_mapping(all_error_responses)
 
@@ -198,37 +212,147 @@ class OpenAPIExtractor:
         }
 
     def _extract_responses(self, operation: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract response information."""
+        """Extract response information with MIME type filtering."""
         responses = operation.get('responses', {})
+        operation_id = operation.get('operationId', 'unknown')
 
         # Look for successful response (200, 201, etc.)
         for status_code in ['200', '201', '202', '204']:
             if status_code in responses:
                 response = responses[status_code]
                 content = response.get('content', {})
-                json_content = content.get('application/json', {})
-                schema = json_content.get('schema', {'type': 'object'})
 
-                return {
-                    'status_code': status_code,
-                    'schema': schema
-                }
+                # Analyze content types to determine response type
+                response_info = self._analyze_response_content(content, operation_id)
+                response_info['status_code'] = status_code
+                return response_info
 
         # Fallback to first response
         if responses:
             first_response = list(responses.values())[0]
             content = first_response.get('content', {})
-            json_content = content.get('application/json', {})
-            schema = json_content.get('schema', {'type': 'object'})
-
-            return {
-                'status_code': '200',
-                'schema': schema
-            }
+            response_info = self._analyze_response_content(content, operation_id)
+            response_info['status_code'] = '200'
+            return response_info
 
         return {
             'status_code': '200',
-            'schema': {'type': 'object'}
+            'schema': {'type': 'object'},
+            'response_type': 'json',
+            'content_type': 'application/json'
+        }
+
+    def _analyze_response_content(self, content: Dict[str, Any], operation_id: str) -> Dict[str, Any]:
+        """Analyze response content by MIME type and return appropriate schema info."""
+        if not content:
+            return {
+                'schema': {'type': 'object'},
+                'response_type': 'json',
+                'content_type': 'application/json'
+            }
+
+        # Check each content type in order of preference
+        for content_type, content_spec in content.items():
+            content_type = content_type.lower()
+
+            # Case 1: Text content (text/*)
+            if content_type.startswith('text/'):
+                return {
+                    'schema': {'type': 'string'},
+                    'response_type': 'text',
+                    'content_type': content_type,
+                    'python_type': 'str'
+                }
+
+            # Case 2: JSON content (application/json or application/*+json)
+            elif (content_type == 'application/json' or
+                  (content_type.startswith('application/') and content_type.endswith('+json'))):
+
+                schema = content_spec.get('schema', {'type': 'object'})
+
+                # Check if this is an inline schema that needs a model
+                response_model_info = self._analyze_inline_schema(schema, operation_id)
+
+                return {
+                    'schema': schema,
+                    'response_type': 'json',
+                    'content_type': content_type,
+                    'python_type': response_model_info.get('python_type', 'Dict[str, Any]'),
+                    'inline_model': response_model_info.get('inline_model'),
+                    'model_name': response_model_info.get('model_name')
+                }
+
+        # Case 3: Fallback for other types
+        first_content_type = list(content.keys())[0] if content else 'application/octet-stream'
+        first_content_spec = list(content.values())[0] if content else {}
+
+        return {
+            'schema': first_content_spec.get('schema', {'type': 'object'}),
+            'response_type': 'binary',
+            'content_type': first_content_type,
+            'python_type': 'bytes'
+        }
+
+    def _analyze_inline_schema(self, schema: Dict[str, Any], operation_id: str) -> Dict[str, Any]:
+        """Analyze schema to determine if inline model generation is needed."""
+        # If it's a $ref, use existing model
+        if '$ref' in schema:
+            ref_path = schema['$ref']
+            if ref_path.startswith('#/components/schemas/'):
+                model_name = ref_path.split('/')[-1]
+                # Simple sanitization
+                sanitized_name = ''.join(word.capitalize() for word in model_name.split('_'))
+                return {
+                    'python_type': sanitized_name,
+                    'inline_model': None,
+                    'model_name': sanitized_name
+                }
+
+        # Check for array of models
+        elif schema.get('type') == 'array':
+            items = schema.get('items', {})
+            if '$ref' in items:
+                ref_path = items['$ref']
+                if ref_path.startswith('#/components/schemas/'):
+                    model_name = ref_path.split('/')[-1]
+                    sanitized_name = ''.join(word.capitalize() for word in model_name.split('_'))
+                    return {
+                        'python_type': f'List[{sanitized_name}]',
+                        'inline_model': None,
+                        'model_name': sanitized_name
+                    }
+            elif items.get('type') == 'object' and 'properties' in items:
+                # Inline array item model
+                from core.sanitizer import IdentifierSanitizer
+                sanitized_op_id = IdentifierSanitizer.to_snake_case(operation_id)
+                model_name = ''.join(word.capitalize() for word in sanitized_op_id.split('_')) + 'ResponseItem'
+                return {
+                    'python_type': f'List[{model_name}]',
+                    'inline_model': {
+                        'name': model_name,
+                        'schema': items
+                    },
+                    'model_name': model_name
+                }
+
+        # Check for inline object that needs a model
+        elif schema.get('type') == 'object' and 'properties' in schema:
+            from core.sanitizer import IdentifierSanitizer
+            sanitized_op_id = IdentifierSanitizer.to_snake_case(operation_id)
+            model_name = ''.join(word.capitalize() for word in sanitized_op_id.split('_')) + 'Response'
+            return {
+                'python_type': model_name,
+                'inline_model': {
+                    'name': model_name,
+                    'schema': schema
+                },
+                'model_name': model_name
+            }
+
+        # Fallback to generic dict
+        return {
+            'python_type': 'Dict[str, Any]',
+            'inline_model': None
         }
 
     def _extract_error_responses(self, operation: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:

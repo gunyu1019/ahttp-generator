@@ -216,22 +216,24 @@ class HTTPGenerator:
             body_arg = self.ast_helper.create_annotated_arg('body', body_type, 'Body')
             args.append(body_arg)
 
-        # Determine return type
-        return_type = self._get_return_type(response, schemas)
+        # Determine return type based on response content type
+        return_type_info = self._analyze_return_type(response, schemas, model_names)
+        return_type = return_type_info.get('type', 'Dict[str, Any]')
+        is_pydantic_model = return_type_info.get('is_pydantic_model', False)
+
         return_annotation = self._parse_return_type(return_type) if return_type else None
 
         # Create decorators list
         decorators = []
 
-        # Add pydantic_response_model decorator ONLY if return type is a Pydantic model
-        if return_type and model_names and self._is_pydantic_model_in_list(return_type, model_names):
-            model_name = self._extract_model_name(return_type)
-            if model_name:
-                pydantic_decorator = self.ast_helper.create_decorator(
-                    'pydantic_response_model',
-                    [ast.Name(id=model_name, ctx=ast.Load())]
-                )
-                decorators.append(pydantic_decorator)
+        # Add pydantic_response_model decorator ONLY for Pydantic models
+        if is_pydantic_model and return_type_info.get('model_name'):
+            model_name = return_type_info['model_name']
+            pydantic_decorator = self.ast_helper.create_decorator(
+                'pydantic_response_model',
+                [ast.Name(id=model_name, ctx=ast.Load())]
+            )
+            decorators.append(pydantic_decorator)
 
         # Add request decorator
         request_decorator = ast.Call(
@@ -510,6 +512,62 @@ class HTTPGenerator:
 
         # Check if the model name is in our generated models list
         return model_name in model_names
+
+    def _analyze_return_type(self, response: Dict[str, Any], schemas: Dict[str, Any], model_names: List[str] = None) -> Dict[str, Any]:
+        """Analyze response to determine return type based on content type."""
+        if not response:
+            return {'type': 'Dict[str, Any]', 'is_pydantic_model': False}
+
+        # Get response type info from parser
+        response_type = response.get('response_type', 'json')
+        python_type = response.get('python_type', 'Dict[str, Any]')
+        model_name = response.get('model_name')
+
+        # Case 1: Text response
+        if response_type == 'text':
+            return {
+                'type': 'str',
+                'is_pydantic_model': False
+            }
+
+        # Case 2: Binary response
+        elif response_type == 'binary':
+            return {
+                'type': 'bytes',
+                'is_pydantic_model': False
+            }
+
+        # Case 3: JSON response
+        elif response_type == 'json':
+            # Check if it's a Pydantic model
+            if model_name and model_names and model_name in model_names:
+                return {
+                    'type': python_type,
+                    'is_pydantic_model': True,
+                    'model_name': model_name
+                }
+            else:
+                # Check if it's a List of models
+                if python_type.startswith('List[') and python_type.endswith(']'):
+                    inner_type = python_type[5:-1]  # Extract inner type from List[X]
+                    if model_names and inner_type in model_names:
+                        return {
+                            'type': python_type,
+                            'is_pydantic_model': True,
+                            'model_name': inner_type
+                        }
+
+                # Fallback to Dict for JSON
+                return {
+                    'type': 'Dict[str, Any]',
+                    'is_pydantic_model': False
+                }
+
+        # Fallback
+        return {
+            'type': 'Dict[str, Any]',
+            'is_pydantic_model': False
+        }
 
     def _extract_model_name(self, type_str: str) -> str:
         """Extract model name from type string (handles List[Model] -> Model)."""
