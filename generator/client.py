@@ -161,8 +161,11 @@ class ClientGenerator:
         request_body = operation.get('request_body')
         response_info = operation.get('responses', {})
 
-        # Sanitize operation method name to match HTTP layer
-        sanitized_method_name = IdentifierSanitizer.to_snake_case(operation_id)
+        # Use parser-determined function name (deduplication already applied)
+        func_name = operation.get('func_name')
+        if not func_name:
+            # Fallback if func_name not set (should not happen)
+            func_name = IdentifierSanitizer.to_snake_case(operation_id)
 
         # Create method arguments (clean interface without Annotated)
         args = [self.ast_helper.create_arg('self')]
@@ -186,7 +189,7 @@ class ClientGenerator:
                 
                 # Map back to sanitized parameter name for HTTP layer
                 call_keywords.append(ast.keyword(
-                    arg=sanitized_name,  # HTTP layer uses sanitized name
+                    arg=sanitized_name,  # HTTP layer uses sanitized name for parameters
                     value=ast.Name(id=friendly_name, ctx=ast.Load())
                 ))
                 param_index += 1
@@ -202,7 +205,7 @@ class ClientGenerator:
                 
                 # Add to delegation call using sanitized name
                 call_keywords.append(ast.keyword(
-                    arg=sanitized_name,  # HTTP layer uses sanitized name
+                    arg=sanitized_name,  # HTTP layer uses sanitized name for parameters
                     value=ast.Name(id=sanitized_name, ctx=ast.Load())
                 ))
                 param_index += 1
@@ -232,7 +235,7 @@ class ClientGenerator:
                         attr='http',
                         ctx=ast.Load()
                     ),
-                    attr=sanitized_method_name,  # Use sanitized method name
+                    attr=func_name,  # Use parser-confirmed unique function name
                     ctx=ast.Load()
                 ),
                 args=[],  # No positional args, all are keywords
@@ -244,7 +247,7 @@ class ClientGenerator:
         body = [ast.Return(value=delegation_call)]
 
         return self._create_async_function_def(
-            name=sanitized_method_name,  # Use sanitized method name
+            name=func_name,  # Use parser-confirmed unique function name
             args=args,
             body=body,
             decorators=[],  # No decorators in facade layer

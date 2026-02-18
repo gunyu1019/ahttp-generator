@@ -32,7 +32,7 @@ class OpenAPIExtractor:
             'service_name': self._generate_service_name(spec)
         }
 
-        # ...existing code...
+        # Combine error responses from all operations
         all_error_responses = {}
         for operation in extracted_data['paths']:
             error_responses = operation.get('error_responses', {})
@@ -62,6 +62,9 @@ class OpenAPIExtractor:
 
         # Do NOT add inline models to schemas (keep domain models separate)
         # extracted_data['schemas'] remains only components/schemas models
+
+        # CRITICAL: Deduplicate function names to prevent method overrides
+        self._deduplicate_function_names(extracted_data['paths'])
 
         # Create status code to exception class mapping for HTTP hooks
         extracted_data['status_code_mapping'] = self._create_status_code_mapping(all_error_responses)
@@ -601,3 +604,54 @@ class OpenAPIExtractor:
             'inline_model': None
         }
 
+    def _deduplicate_function_names(self, operations: List[Dict[str, Any]]) -> None:
+        """
+        Deduplicate function names to prevent method overrides in generated code.
+
+        This method ensures that each operation has a unique function name by adding
+        numerical suffixes to duplicate names (e.g., list_players_1, list_players_2).
+
+        IMPORTANT: This only changes the Python method name (func_name), not the
+        response model names which should remain based on operationId.
+        """
+        from core.sanitizer import IdentifierSanitizer
+
+        # Step 1: Generate function names for all operations
+        for operation in operations:
+            operation_id = operation.get('operation_id', 'operation')
+            func_name = IdentifierSanitizer.to_snake_case(operation_id)
+            operation['func_name'] = func_name
+
+        # Step 2: Track name usage and resolve conflicts
+        name_counter = {}
+
+        for operation in operations:
+            original_func_name = operation['func_name']
+
+            if original_func_name not in name_counter:
+                # First occurrence - register and continue
+                name_counter[original_func_name] = 1
+            else:
+                # Collision detected - generate unique name with suffix
+                count = name_counter[original_func_name]
+                new_func_name = f"{original_func_name}_{count}"
+
+                # Ensure the new name is also unique (handle potential cascading collisions)
+                while new_func_name in name_counter:
+                    count += 1
+                    new_func_name = f"{original_func_name}_{count}"
+
+                # Update the operation with the unique function name
+                operation['func_name'] = new_func_name
+
+                # Register both the new name and increment the counter for the original
+                name_counter[new_func_name] = 1
+                name_counter[original_func_name] = count + 1
+
+        # Step 3: Validate uniqueness (optional debug check)
+        # used_names = set()
+        # for operation in operations:
+        #     func_name = operation['func_name']
+        #     if func_name in used_names:
+        #         print(f"ERROR: Deduplication failed - '{func_name}' is still duplicated!")
+        #     used_names.add(func_name)

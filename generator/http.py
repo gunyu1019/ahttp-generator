@@ -150,8 +150,11 @@ class HTTPGenerator:
         request_body = operation.get('request_body')
         response = operation.get('responses', {})
 
-        # Sanitize operation method name (Fix for camelCase method names)
-        sanitized_method_name = IdentifierSanitizer.to_snake_case(operation_id)
+        # Use parser-determined function name (deduplication already applied)
+        func_name = operation.get('func_name')
+        if not func_name:
+            # Fallback if func_name not set (should not happen)
+            func_name = IdentifierSanitizer.to_snake_case(operation_id)
 
         # Create method arguments
         args = [self.ast_helper.create_arg('self')]
@@ -268,7 +271,7 @@ class HTTPGenerator:
         body = [ast.Pass()]
 
         return self._create_async_function_def(
-            name=sanitized_method_name,  # Use sanitized method name
+            name=func_name,  # Use parser-confirmed unique function name
             args=args,
             body=body,
             decorators=decorators,
