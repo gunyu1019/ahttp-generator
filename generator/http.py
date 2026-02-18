@@ -117,8 +117,8 @@ class HTTPGenerator:
         )
         class_body.append(docstring)
 
-        # Add __init__ method
-        init_method = self._create_init_method()
+        # Add __init__ method with security schemes support
+        init_method = self._create_init_method(extracted_data)
         class_body.append(init_method)
 
         # Add after_request hook method if there are error responses
@@ -305,13 +305,29 @@ class HTTPGenerator:
             body=class_body
         )
 
-    def _create_init_method(self) -> ast.FunctionDef:
-        """Create __init__ method for HTTPClient."""
-        # Create arguments
+    def _create_init_method(self, extracted_data: Dict[str, Any] = None) -> ast.FunctionDef:
+        """Create __init__ method for HTTPClient with optional security schemes support."""
+        security_schemes = extracted_data.get('security_schemes', []) if extracted_data else []
+
+        # Create arguments - base_url is always first, then security scheme arguments
         args = [
             self.ast_helper.create_arg('self'),
             self.ast_helper.create_arg('base_url', ast.Name(id='str', ctx=ast.Load()))
         ]
+
+        # Add security scheme arguments
+        defaults = []
+        for scheme in security_schemes:
+            arg_name = scheme['arg_name']
+            args.append(self.ast_helper.create_arg(
+                arg_name,
+                ast.Subscript(
+                    value=ast.Name(id='Optional', ctx=ast.Load()),
+                    slice=ast.Name(id='str', ctx=ast.Load()),
+                    ctx=ast.Load()
+                )
+            ))
+            defaults.append(ast.Constant(value=None))
 
         # Create method body
         body = [
@@ -333,11 +349,30 @@ class HTTPGenerator:
             )
         ]
 
-        return self.ast_helper.create_function_def(
+        # Add authentication logic for each security scheme
+        for scheme in security_schemes:
+            auth_logic = self._create_auth_logic(scheme)
+            if auth_logic:
+                body.append(auth_logic)
+
+        # Create function definition with defaults support
+        func_def = ast.FunctionDef(
             name='__init__',
-            args=args,
-            body=body
+            args=ast.arguments(
+                posonlyargs=[],
+                args=args,
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=defaults  # Default values for optional security arguments
+            ),
+            body=body,
+            decorator_list=[],
+            returns=None
         )
+
+        return ast.fix_missing_locations(func_def)
 
     def _create_after_request_method(self, status_code_mapping: Dict[int, str]) -> ast.AsyncFunctionDef:
         """Create after_request hook method for automatic exception handling."""
@@ -678,4 +713,75 @@ class HTTPGenerator:
 
         return ast.fix_missing_locations(func_def)
 
+    def _create_auth_logic(self, scheme: Dict[str, Any]) -> ast.If:
+        """Create authentication logic for a security scheme."""
+        arg_name = scheme['arg_name']
+        target = scheme['target']
+        key = scheme['key']
+        format_str = scheme['format']
 
+        # Create condition: if arg_name:
+        condition = ast.Name(id=arg_name, ctx=ast.Load())
+
+        # Create the assignment based on target (header or cookie)
+        if target == 'header':
+            # self.headers[key] = format_str.format(arg_name)
+            if '{}' in format_str:
+                # Format string like "Bearer {}"
+                value_expr = ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Constant(value=format_str),
+                        attr='format',
+                        ctx=ast.Load()
+                    ),
+                    args=[ast.Name(id=arg_name, ctx=ast.Load())],
+                    keywords=[]
+                )
+            else:
+                # Direct value like "{}"
+                value_expr = ast.Name(id=arg_name, ctx=ast.Load())
+
+            assignment = ast.Assign(
+                targets=[
+                    ast.Subscript(
+                        value=ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='headers',
+                            ctx=ast.Load()
+                        ),
+                        slice=ast.Constant(value=key),
+                        ctx=ast.Store()
+                    )
+                ],
+                value=value_expr
+            )
+
+        elif target == 'cookie':
+            # self.cookies[key] = arg_name
+            assignment = ast.Assign(
+                targets=[
+                    ast.Subscript(
+                        value=ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='cookies',
+                            ctx=ast.Load()
+                        ),
+                        slice=ast.Constant(value=key),
+                        ctx=ast.Store()
+                    )
+                ],
+                value=ast.Name(id=arg_name, ctx=ast.Load())
+            )
+
+        else:
+            # Unsupported target - skip
+            return None
+
+        # Create if statement
+        if_stmt = ast.If(
+            test=condition,
+            body=[assignment],
+            orelse=[]
+        )
+
+        return if_stmt

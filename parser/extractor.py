@@ -29,6 +29,7 @@ class OpenAPIExtractor:
             'servers': self._extract_servers(spec),
             'paths': self._extract_paths(spec),
             'schemas': self._extract_schemas(spec),
+            'security_schemes': self._extract_security_schemes(spec),
             'service_name': self._generate_service_name(spec)
         }
 
@@ -603,6 +604,121 @@ class OpenAPIExtractor:
             'python_type': 'Dict[str, Any]',
             'inline_model': None
         }
+
+    def _extract_security_schemes(self, spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Extract security schemes from OpenAPI specification.
+
+        Converts securitySchemes to a standardized format for code generation.
+
+        Args:
+            spec: OpenAPI specification dictionary
+
+        Returns:
+            List of security scheme dictionaries with standardized structure
+        """
+        components = spec.get('components', {})
+        security_schemes = components.get('securitySchemes', {})
+
+        if not security_schemes:
+            return []
+
+        from core.sanitizer import IdentifierSanitizer
+
+        extracted_schemes = []
+
+        for scheme_name, scheme_def in security_schemes.items():
+            # Sanitize scheme name to snake_case for Python variable names
+            arg_name = IdentifierSanitizer.to_snake_case(scheme_name)
+
+            scheme_type = scheme_def.get('type', '').lower()
+
+            if scheme_type == 'http':
+                # HTTP authentication schemes (Bearer, Basic)
+                scheme_info = self._process_http_scheme(arg_name, scheme_def)
+                if scheme_info:
+                    extracted_schemes.append(scheme_info)
+
+            elif scheme_type == 'apikey':
+                # API Key authentication schemes
+                scheme_info = self._process_apikey_scheme(arg_name, scheme_def)
+                if scheme_info:
+                    extracted_schemes.append(scheme_info)
+
+            elif scheme_type == 'oauth2':
+                # OAuth2 authentication - placeholder for future implementation
+                # Skip for now as specified in requirements
+                pass
+
+            else:
+                # Unknown scheme type - skip with warning
+                print(f"Warning: Unknown security scheme type '{scheme_type}' for '{scheme_name}' - skipped")
+
+        return extracted_schemes
+
+    def _process_http_scheme(self, arg_name: str, scheme_def: Dict[str, Any]) -> Dict[str, Any]:
+        """Process HTTP authentication scheme (Bearer, Basic)."""
+        scheme = scheme_def.get('scheme', '').lower()
+
+        if scheme == 'bearer':
+            return {
+                'arg_name': arg_name,
+                'type': 'http',
+                'scheme': 'bearer',
+                'target': 'header',
+                'key': 'Authorization',
+                'format': 'Bearer {}'
+            }
+
+        elif scheme == 'basic':
+            return {
+                'arg_name': arg_name,
+                'type': 'http',
+                'scheme': 'basic',
+                'target': 'header',
+                'key': 'Authorization',
+                'format': 'Basic {}'
+            }
+
+        else:
+            print(f"Warning: Unsupported HTTP scheme '{scheme}' for '{arg_name}' - skipped")
+            return None
+
+    def _process_apikey_scheme(self, arg_name: str, scheme_def: Dict[str, Any]) -> Dict[str, Any]:
+        """Process API Key authentication scheme."""
+        key_location = scheme_def.get('in', '').lower()
+        key_name = scheme_def.get('name', '')
+
+        if not key_name:
+            print(f"Warning: API Key scheme '{arg_name}' missing 'name' field - skipped")
+            return None
+
+        if key_location == 'header':
+            return {
+                'arg_name': arg_name,
+                'type': 'apiKey',
+                'target': 'header',
+                'key': key_name,
+                'format': '{}'
+            }
+
+        elif key_location == 'cookie':
+            return {
+                'arg_name': arg_name,
+                'type': 'apiKey',
+                'target': 'cookie',
+                'key': key_name,
+                'format': '{}'
+            }
+
+        elif key_location == 'query':
+            # Skip query parameters for global authentication as specified
+            print(f"Warning: Query parameter authentication for '{arg_name}' not supported in global scope - skipped")
+            return None
+
+        else:
+            print(f"Warning: Unknown API Key location '{key_location}' for '{arg_name}' - skipped")
+            return None
 
     def _deduplicate_function_names(self, operations: List[Dict[str, Any]]) -> None:
         """

@@ -90,8 +90,8 @@ class ClientGenerator:
         )
         class_body.append(docstring)
 
-        # Add __init__ method
-        init_method = self._create_facade_init_method(http_class_name, base_url)
+        # Add __init__ method with security schemes support
+        init_method = self._create_facade_init_method(http_class_name, base_url, extracted_data)
         class_body.append(init_method)
 
         # Add API operation methods (facade methods)
@@ -108,18 +108,46 @@ class ClientGenerator:
             body=class_body
         )
 
-    def _create_facade_init_method(self, http_class_name: str, base_url: str) -> ast.FunctionDef:
-        """Create __init__ method for facade class with composition."""
-        # Create arguments: self, base_url with default value
-        args = [
-            self.ast_helper.create_arg('self'),
-            self.ast_helper.create_arg('base_url', ast.Name(id='str', ctx=ast.Load()))
+    def _create_facade_init_method(self, http_class_name: str, base_url: str, extracted_data: Dict[str, Any] = None) -> ast.FunctionDef:
+        """Create __init__ method for facade class with composition and security schemes support."""
+        security_schemes = extracted_data.get('security_schemes', []) if extracted_data else []
+
+        # Create arguments: self, then security scheme arguments, then base_url with default value
+        args = [self.ast_helper.create_arg('self')]
+
+        # Add security scheme arguments first
+        defaults = []
+        for scheme in security_schemes:
+            arg_name = scheme['arg_name']
+            args.append(self.ast_helper.create_arg(
+                arg_name,
+                ast.Subscript(
+                    value=ast.Name(id='Optional', ctx=ast.Load()),
+                    slice=ast.Name(id='str', ctx=ast.Load()),
+                    ctx=ast.Load()
+                )
+            ))
+            defaults.append(ast.Constant(value=None))
+
+        # Add base_url argument with default value
+        args.append(self.ast_helper.create_arg('base_url', ast.Name(id='str', ctx=ast.Load())))
+        defaults.append(self.ast_helper.create_string_constant(base_url))
+
+        # Create method body: self.http = HTTPClass(base_url, **auth_args)
+        http_call_keywords = [
+            ast.keyword(arg='base_url', value=ast.Name(id='base_url', ctx=ast.Load()))
         ]
 
-        # Set default value for base_url
-        defaults = [self.ast_helper.create_string_constant(base_url)]
+        # Add security scheme arguments to HTTP class call
+        for scheme in security_schemes:
+            arg_name = scheme['arg_name']
+            http_call_keywords.append(
+                ast.keyword(
+                    arg=arg_name,
+                    value=ast.Name(id=arg_name, ctx=ast.Load())
+                )
+            )
 
-        # Create method body: self.http = HTTPClass(base_url)
         body = [
             ast.Assign(
                 targets=[ast.Attribute(
@@ -129,8 +157,8 @@ class ClientGenerator:
                 )],
                 value=ast.Call(
                     func=ast.Name(id=http_class_name, ctx=ast.Load()),
-                    args=[ast.Name(id='base_url', ctx=ast.Load())],
-                    keywords=[]
+                    args=[],
+                    keywords=http_call_keywords
                 )
             )
         ]
