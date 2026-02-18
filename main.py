@@ -16,6 +16,7 @@ from parser.extractor import OpenAPIExtractor
 from generator.models import ModelsGenerator
 from generator.client import ClientGenerator
 from generator.package_init import PackageInitGenerator
+from generator.exceptions import ExceptionsGenerator
 
 
 def write_ast_to_file(file_path: str, module_ast: ast.Module) -> None:
@@ -78,6 +79,10 @@ def main():
     models_generator = ModelsGenerator()
     model_modules, model_names = models_generator.generate(extracted_data)
 
+    print("Generating exception files")
+    exceptions_generator = ExceptionsGenerator()
+    exception_modules = exceptions_generator.generate(extracted_data)
+
     print("Generating service.py")
     client_generator = ClientGenerator()
     client_ast = client_generator.generate(extracted_data, model_names)
@@ -100,6 +105,16 @@ def main():
         model_file = models_dir / filename
         write_ast_to_file(str(model_file), module_ast)
         print(f"  ✓ {model_file}")
+
+    # Create exceptions directory and write exception files
+    if exception_modules:
+        exceptions_dir = output_path / 'exceptions'
+        exceptions_dir.mkdir(exist_ok=True)
+
+        for filename, module_ast in exception_modules.items():
+            exception_file = exceptions_dir / filename
+            write_ast_to_file(str(exception_file), module_ast)
+            print(f"  ✓ {exception_file}")
 
     # Write service.py
     service_file = output_path / 'service.py'

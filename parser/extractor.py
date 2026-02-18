@@ -20,13 +20,31 @@ class OpenAPIExtractor:
         Returns:
             Dictionary containing extracted data for code generation
         """
-        return {
+        # Extract basic info
+        extracted_data = {
             'info': self._extract_info(spec),
             'servers': self._extract_servers(spec),
             'paths': self._extract_paths(spec),
             'schemas': self._extract_schemas(spec),
             'service_name': self._generate_service_name(spec)
         }
+
+        # Collect all unique error responses
+        all_error_responses = {}
+        for operation in extracted_data['paths']:
+            error_responses = operation.get('error_responses', {})
+            for status_code, error_info in error_responses.items():
+                if status_code not in all_error_responses:
+                    all_error_responses[status_code] = error_info
+                # If same status code exists, merge descriptions
+                elif error_info['description'] not in all_error_responses[status_code]['description']:
+                    current_desc = all_error_responses[status_code]['description']
+                    new_desc = error_info['description']
+                    all_error_responses[status_code]['description'] = f"{current_desc}; {new_desc}"
+
+        extracted_data['error_responses'] = all_error_responses
+
+        return extracted_data
 
     def _extract_info(self, spec: Dict[str, Any]) -> Dict[str, Any]:
         """Extract API information."""
@@ -69,7 +87,8 @@ class OpenAPIExtractor:
             'summary': operation.get('summary', ''),
             'parameters': self._extract_parameters(operation),
             'request_body': self._extract_request_body(operation),
-            'responses': self._extract_responses(operation)
+            'responses': self._extract_responses(operation),
+            'error_responses': self._extract_error_responses(operation)
         }
 
     def _extract_parameters(self, operation: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -139,6 +158,28 @@ class OpenAPIExtractor:
             'status_code': '200',
             'schema': {'type': 'object'}
         }
+
+    def _extract_error_responses(self, operation: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Extract error response information (non-2xx status codes)."""
+        responses = operation.get('responses', {})
+        error_responses = {}
+
+        for status_code, response in responses.items():
+            # Only process non-success status codes
+            if not status_code.startswith('2') and status_code.isdigit():
+                error_responses[status_code] = {
+                    'description': response.get('description', f'Error {status_code}'),
+                    'content': response.get('content', {}),
+                    'schema': self._extract_error_schema(response)
+                }
+
+        return error_responses
+
+    def _extract_error_schema(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract schema from error response."""
+        content = response.get('content', {})
+        json_content = content.get('application/json', {})
+        return json_content.get('schema', {'type': 'object'})
 
     def _extract_schemas(self, spec: Dict[str, Any]) -> Dict[str, Any]:
         """Extract component schemas."""
