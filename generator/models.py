@@ -28,7 +28,8 @@ class ModelsGenerator:
             Tuple of (Dict mapping filenames to AST modules, list of generated model names)
         """
         schemas = extracted_data.get('schemas', {})
-        
+        paths = extracted_data.get('paths', [])
+
         # Track generated model names
         model_names = []
         model_modules = {}
@@ -36,7 +37,7 @@ class ModelsGenerator:
         # Sort schemas to handle dependencies
         sorted_schemas = self._sort_schemas_by_dependencies(schemas)
         
-        # Generate individual model files
+        # Generate individual model files from schemas
         for schema_name, schema_def in sorted_schemas:
             sanitized_name = self.type_mapper.sanitize_schema_name(schema_name)
             model_names.append(sanitized_name)
@@ -48,6 +49,13 @@ class ModelsGenerator:
             filename = self._to_snake_case(sanitized_name) + '.py'
             model_modules[filename] = module
         
+        # Generate request body models from operations
+        request_models = self._generate_request_models(paths, schemas)
+        for request_name, request_module in request_models.items():
+            model_names.append(request_name)
+            filename = self._to_snake_case(request_name) + '.py'
+            model_modules[filename] = request_module
+
         # Generate models/__init__.py
         init_module = self._create_models_init_module(model_names)
         model_modules['__init__.py'] = init_module
@@ -296,3 +304,73 @@ class ModelsGenerator:
         snake_case = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', pascal_case)
         snake_case = re.sub('([a-z0-9])([A-Z])', r'\1_\2', snake_case)
         return snake_case.lower()
+
+    def _generate_request_models(self, paths: List[Dict[str, Any]], schemas: Dict[str, Any]) -> Dict[str, ast.Module]:
+        """Generate request body models from operation definitions."""
+        request_models = {}
+
+        for operation in paths:
+            request_body = operation.get('request_body')
+            if not request_body:
+                continue
+
+            operation_id = operation.get('operation_id', 'operation')
+            request_name = self._generate_request_model_name(operation_id)
+
+            # Check if request body has a direct schema reference
+            schema = request_body.get('schema', {})
+            if '$ref' in schema:
+                # If it's a reference, skip creating duplicate model
+                continue
+
+            # Create request model from inline schema
+            if schema and 'properties' in schema:
+                module = self._create_request_model_module(request_name, schema, schemas)
+                request_models[request_name] = module
+
+        return request_models
+
+    def _generate_request_model_name(self, operation_id: str) -> str:
+        """Generate request model name from operation ID."""
+        # Convert operation_id to PascalCase properly
+        # Handle both camelCase and snake_case
+        import re
+
+        # Split by underscores or camelCase boundaries
+        words = re.findall(r'[A-Z]*[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]+$|[0-9]+', operation_id)
+        if not words:
+            words = operation_id.split('_')
+
+        # Capitalize each word
+        pascal_case = ''.join(word.capitalize() for word in words if word)
+
+        # Add Request suffix if not present
+        if not pascal_case.endswith('Request'):
+            pascal_case += 'Request'
+
+        return pascal_case
+
+    def _create_request_model_module(self, class_name: str, schema: Dict[str, Any], schemas: Dict[str, Any]) -> ast.Module:
+        """Create an AST module for a request model."""
+        # Analyze types used in this specific model
+        types_used = {'BaseModel'}
+        schema_types = self._analyze_schema_types(schema, schemas)
+        types_used.update(schema_types)
+
+        # Create module body
+        body = []
+
+        # Add imports
+        imports = self._create_imports_for_single_model(types_used, schema, schemas)
+        body.extend(imports)
+
+        # Add model class
+        model_class = self._create_model_class(class_name, schema, schemas)
+        body.append(model_class)
+
+        # Create and return module
+        module = ast.Module(body=body, type_ignores=[])
+        ast.fix_missing_locations(module)
+
+        return module
+

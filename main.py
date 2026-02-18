@@ -17,6 +17,7 @@ from generator.models import ModelsGenerator
 from generator.client import ClientGenerator
 from generator.package_init import PackageInitGenerator
 from generator.exceptions import ExceptionsGenerator
+from generator.http import HTTPGenerator
 
 
 def write_ast_to_file(file_path: str, module_ast: ast.Module) -> None:
@@ -83,7 +84,11 @@ def main():
     exceptions_generator = ExceptionsGenerator()
     exception_modules = exceptions_generator.generate(extracted_data)
 
-    print("Generating service.py")
+    print("Generating http.py")
+    http_generator = HTTPGenerator()
+    http_ast = http_generator.generate(extracted_data)
+
+    print("Generating client.py")
     client_generator = ClientGenerator()
     client_ast = client_generator.generate(extracted_data, model_names)
 
@@ -116,10 +121,15 @@ def main():
             write_ast_to_file(str(exception_file), module_ast)
             print(f"  ✓ {exception_file}")
 
-    # Write service.py
-    service_file = output_path / 'service.py'
-    write_ast_to_file(str(service_file), client_ast)
-    print(f"  ✓ {service_file}")
+    # Write http.py
+    http_file = output_path / 'http.py'
+    write_ast_to_file(str(http_file), http_ast)
+    print(f"  ✓ {http_file}")
+
+    # Write client.py
+    client_file = output_path / 'client.py'
+    write_ast_to_file(str(client_file), client_ast)
+    print(f"  ✓ {client_file}")
 
     # Write __init__.py
     init_file = output_path / '__init__.py'

@@ -98,9 +98,12 @@ class ClientGenerator:
         if typing_imports:
             imports.append(self.ast_helper.create_import('typing', typing_imports))
         
+        # Import HTTPClient from http module
+        imports.append(self.ast_helper.create_relative_import('http', ['HTTPClient']))
+
         # Import ahttp_client components
-        ahttp_imports = ['Session', 'request']
-        
+        ahttp_imports = ['request']
+
         # Check if we need parameter annotations
         if 'Path' in types_used:
             ahttp_imports.append('Path')
@@ -145,7 +148,7 @@ class ClientGenerator:
         # Create class
         return self.ast_helper.create_class_def(
             name=service_name,
-            bases=['Session'],
+            bases=['HTTPClient'],
             body=body
         )
 
@@ -219,11 +222,27 @@ class ClientGenerator:
         # Add request body parameter
         if request_body:
             body_schema = request_body.get('schema', {})
-            body_type, _ = self.type_mapper.map_schema_to_type(body_schema, schemas)
+
+            # Check if it's a schema reference
+            if '$ref' in body_schema:
+                # Use the referenced model directly
+                ref_path = body_schema['$ref']
+                if ref_path.startswith('#/components/schemas/'):
+                    model_name = ref_path.split('/')[-1]
+                    body_type = self.type_mapper.sanitize_schema_name(model_name)
+                else:
+                    body_type = 'dict'
+            elif 'properties' in body_schema:
+                # Use generated request model
+                request_model_name = self._generate_request_model_name(operation_id)
+                body_type = request_model_name
+            else:
+                body_type = 'dict'
+
             types_used.add(body_type)
             types_used.add('Body')
 
-            body_arg = self.ast_helper.create_annotated_arg('data', body_type, 'Body')
+            body_arg = self.ast_helper.create_annotated_arg('body', body_type, 'Body')
             args.append(body_arg)
 
         # Determine return type
@@ -331,5 +350,25 @@ class ClientGenerator:
             return type_str
 
         return None
+
+    def _generate_request_model_name(self, operation_id: str) -> str:
+        """Generate request model name from operation ID."""
+        # Convert operation_id to PascalCase properly
+        # Handle both camelCase and snake_case
+        import re
+
+        # Split by underscores or camelCase boundaries
+        words = re.findall(r'[A-Z]*[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]+$|[0-9]+', operation_id)
+        if not words:
+            words = operation_id.split('_')
+
+        # Capitalize each word
+        pascal_case = ''.join(word.capitalize() for word in words if word)
+
+        # Add Request suffix if not present
+        if not pascal_case.endswith('Request'):
+            pascal_case += 'Request'
+
+        return pascal_case
 
 
