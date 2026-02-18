@@ -646,9 +646,10 @@ class OpenAPIExtractor:
                     extracted_schemes.append(scheme_info)
 
             elif scheme_type == 'oauth2':
-                # OAuth2 authentication - placeholder for future implementation
-                # Skip for now as specified in requirements
-                pass
+                # OAuth2 authentication - support clientCredentials flow
+                scheme_info = self._process_oauth2_scheme(arg_name, scheme_def)
+                if scheme_info:
+                    extracted_schemes.extend(scheme_info)  # OAuth2 returns multiple items
 
             else:
                 # Unknown scheme type - skip with warning
@@ -724,6 +725,35 @@ class OpenAPIExtractor:
         else:
             print(f"Warning: Unknown API Key location '{key_location}' for '{arg_name}' - skipped")
             return None
+
+    def _process_oauth2_scheme(self, arg_name: str, scheme_def: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Process OAuth2 authentication scheme."""
+        flows = scheme_def.get('flows', {})
+
+        # Check for clientCredentials flow
+        if 'clientCredentials' in flows:
+            # OAuth2 clientCredentials requires client_id and client_secret
+            return [
+                {
+                    'arg_name': 'client_id',
+                    'type': 'oauth2_creds',
+                    'target': 'oauth2',
+                    'key': 'client_id',
+                    'format': '{}'
+                },
+                {
+                    'arg_name': 'client_secret',
+                    'type': 'oauth2_creds',
+                    'target': 'oauth2',
+                    'key': 'client_secret',
+                    'format': '{}'
+                }
+            ]
+
+        # Other OAuth2 flows not supported yet
+        supported_flows = list(flows.keys()) if flows else []
+        print(f"Warning: OAuth2 flows {supported_flows} not supported for '{arg_name}' - only clientCredentials is supported")
+        return []
 
     def _deduplicate_function_names(self, operations: List[Dict[str, Any]]) -> None:
         """

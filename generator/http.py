@@ -896,6 +896,19 @@ class HTTPGenerator:
                 value=ast.Name(id=arg_name, ctx=ast.Load())
             )
 
+        elif target == 'oauth2':
+            # For OAuth2 credentials, store as instance variable: self.{arg_name} = {arg_name}
+            assignment = ast.Assign(
+                targets=[
+                    ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr=arg_name,
+                        ctx=ast.Store()
+                    )
+                ],
+                value=ast.Name(id=arg_name, ctx=ast.Load())
+            )
+
         else:
             # Unsupported target - skip
             return None
