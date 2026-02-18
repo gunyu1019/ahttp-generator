@@ -74,9 +74,9 @@ def main():
     extracted_data = extractor.extract(spec_data)
 
     # Generate AST modules
-    print("Generating models.py")
+    print("Generating model files")
     models_generator = ModelsGenerator()
-    models_ast, model_names = models_generator.generate(extracted_data)
+    model_modules, model_names = models_generator.generate(extracted_data)
 
     print("Generating service.py")
     client_generator = ClientGenerator()
@@ -92,10 +92,14 @@ def main():
 
     print(f"Writing package files to {output_path}")
 
-    # Write models.py
-    models_file = output_path / 'models.py'
-    write_ast_to_file(str(models_file), models_ast)
-    print(f"  ✓ {models_file}")
+    # Create models directory and write model files
+    models_dir = output_path / 'models'
+    models_dir.mkdir(exist_ok=True)
+
+    for filename, module_ast in model_modules.items():
+        model_file = models_dir / filename
+        write_ast_to_file(str(model_file), module_ast)
+        print(f"  ✓ {model_file}")
 
     # Write service.py
     service_file = output_path / 'service.py'
