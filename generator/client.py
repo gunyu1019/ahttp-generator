@@ -140,15 +140,19 @@ class ClientGenerator:
         parameters = operation.get('parameters', [])
         request_body = operation.get('request_body')
 
+        # Sanitize operation method name to match HTTP layer
+        sanitized_method_name = IdentifierSanitizer.to_snake_case(operation_id)
+
         # Create method arguments (clean interface without Annotated)
         args = [self.ast_helper.create_arg('self')]
         call_keywords = []  # For delegation call
 
         # Add path parameters with friendly names
+        param_index = 0
         for param in parameters:
             if param['in'] == 'path':
-                original_name = param['name']
-                sanitized_name = IdentifierSanitizer.to_snake_case(original_name)
+                original_name = param.get('name', f'arg_{param_index}')
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
 
                 # Use more friendly names for common cases
                 if original_name == 'target_id':
@@ -164,12 +168,13 @@ class ClientGenerator:
                     arg=sanitized_name,  # HTTP layer uses sanitized name
                     value=ast.Name(id=friendly_name, ctx=ast.Load())
                 ))
+                param_index += 1
 
         # Add query parameters
         for param in parameters:
             if param['in'] == 'query':
-                original_name = param['name']
-                sanitized_name = IdentifierSanitizer.to_snake_case(original_name)
+                original_name = param.get('name', f'arg_{param_index}')
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
 
                 arg = self.ast_helper.create_arg(sanitized_name, ast.Name(id='str', ctx=ast.Load()))
                 args.append(arg)
@@ -179,6 +184,7 @@ class ClientGenerator:
                     arg=sanitized_name,  # HTTP layer uses sanitized name
                     value=ast.Name(id=sanitized_name, ctx=ast.Load())
                 ))
+                param_index += 1
 
         # Add request body parameter
         if request_body:
@@ -192,7 +198,7 @@ class ClientGenerator:
                 value=ast.Name(id='request_body', ctx=ast.Load())
             ))
 
-        # Create delegation call: return self.http.operation_method(**kwargs)
+        # Create delegation call: return self.http.sanitized_method_name(**kwargs)
         delegation_call = ast.Call(
             func=ast.Attribute(
                 value=ast.Attribute(
@@ -200,7 +206,7 @@ class ClientGenerator:
                     attr='http',
                     ctx=ast.Load()
                 ),
-                attr=operation_id,
+                attr=sanitized_method_name,  # Use sanitized method name
                 ctx=ast.Load()
             ),
             args=[],  # No positional args, all are keywords
@@ -211,7 +217,7 @@ class ClientGenerator:
         body = [ast.Return(value=delegation_call)]
 
         return self.ast_helper.create_function_def(
-            name=operation_id,
+            name=sanitized_method_name,  # Use sanitized method name
             args=args,
             body=body,
             decorators=[],  # No decorators in facade layer

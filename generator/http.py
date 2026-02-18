@@ -42,7 +42,7 @@ class HTTPGenerator:
         body.extend(import_statements)
 
         # Create HTTP implementation class
-        http_impl_class = self._create_http_impl_class(service_name, status_code_mapping, extracted_data)
+        http_impl_class = self._create_http_impl_class(service_name, status_code_mapping, extracted_data, model_names)
         body.append(http_impl_class)
 
         # Create module
@@ -87,7 +87,7 @@ class HTTPGenerator:
 
         return imports
 
-    def _create_http_impl_class(self, service_name: str, status_code_mapping: Dict[int, str], extracted_data: Dict[str, Any]) -> ast.ClassDef:
+    def _create_http_impl_class(self, service_name: str, status_code_mapping: Dict[int, str], extracted_data: Dict[str, Any], model_names: List[str] = None) -> ast.ClassDef:
         """Create HTTP implementation class definition (Session wrapper)."""
         # Generate HTTP class name: ApiService -> ApiHTTP
         http_class_name = service_name.replace('Service', 'HTTP')
@@ -115,7 +115,7 @@ class HTTPGenerator:
         schemas = extracted_data.get('schemas', {})
 
         for operation in paths:
-            method_def = self._create_http_operation_method(operation, schemas)
+            method_def = self._create_http_operation_method(operation, schemas, model_names)
             class_body.append(method_def)
 
         # Create class
@@ -125,7 +125,7 @@ class HTTPGenerator:
             body=class_body
         )
 
-    def _create_http_operation_method(self, operation: Dict[str, Any], schemas: Dict[str, Any]) -> ast.FunctionDef:
+    def _create_http_operation_method(self, operation: Dict[str, Any], schemas: Dict[str, Any], model_names: List[str] = None) -> ast.FunctionDef:
         """Create HTTP operation method with full ahttp_client decorators and annotations."""
         operation_id = operation.get('operation_id', 'operation')
         method = operation.get('method', 'GET')
@@ -134,18 +134,28 @@ class HTTPGenerator:
         request_body = operation.get('request_body')
         response = operation.get('responses', {})
 
+        # Sanitize operation method name (Fix for camelCase method names)
+        sanitized_method_name = IdentifierSanitizer.to_snake_case(operation_id)
+
         # Create method arguments
         args = [self.ast_helper.create_arg('self')]
+        used_names = set()  # Track used parameter names to avoid collisions
 
         # Add path parameters with Annotated types
+        param_index = 0
         for param in parameters:
             if param['in'] == 'path':
                 param_type, annotation_source = self._map_parameter_type(param)
-                original_name = param['name']
-                sanitized_name = IdentifierSanitizer.to_snake_case(original_name)
+                original_name = param.get('name', f'arg_{param_index}')
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
+
+                # Handle name collisions
+                if sanitized_name in used_names:
+                    sanitized_name = f"{sanitized_name}_{param_index}"
+                used_names.add(sanitized_name)
 
                 # Check if we need custom_name
-                if IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
+                if original_name != f'arg_{param_index}' and IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
                     # Use custom_name annotation
                     annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
                         sanitized_name,
@@ -161,20 +171,26 @@ class HTTPGenerator:
                         annotation_source
                     )
                 args.append(annotated_arg)
+                param_index += 1
 
         # Add query parameters with Annotated types
         for param in parameters:
             if param['in'] == 'query':
                 param_type, annotation_source = self._map_parameter_type(param)
-                original_name = param['name']
-                sanitized_name = IdentifierSanitizer.to_snake_case(original_name)
+                original_name = param.get('name', f'arg_{param_index}')
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
 
                 # Handle optional parameters
                 if not param.get('required', False):
                     param_type = f'Optional[{param_type}]'
 
+                # Handle name collisions
+                if sanitized_name in used_names:
+                    sanitized_name = f"{sanitized_name}_{param_index}"
+                used_names.add(sanitized_name)
+
                 # Check if we need custom_name
-                if IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
+                if original_name != f'arg_{param_index}' and IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
                     # Use custom_name annotation
                     annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
                         sanitized_name,
@@ -190,6 +206,7 @@ class HTTPGenerator:
                         annotation_source
                     )
                 args.append(annotated_arg)
+                param_index += 1
 
         # Add request body parameter with Annotated type
         if request_body:
@@ -206,8 +223,8 @@ class HTTPGenerator:
         # Create decorators list
         decorators = []
 
-        # Add pydantic_response_model decorator if return type is a Pydantic model
-        if return_type and self._is_pydantic_model(return_type):
+        # Add pydantic_response_model decorator ONLY if return type is a Pydantic model
+        if return_type and model_names and self._is_pydantic_model_in_list(return_type, model_names):
             model_name = self._extract_model_name(return_type)
             if model_name:
                 pydantic_decorator = self.ast_helper.create_decorator(
@@ -230,7 +247,7 @@ class HTTPGenerator:
         body = [ast.Return(value=None)]
 
         return self.ast_helper.create_function_def(
-            name=operation_id,
+            name=sanitized_method_name,  # Use sanitized method name
             args=args,
             body=body,
             decorators=decorators,
@@ -477,6 +494,19 @@ class HTTPGenerator:
 
         # Simple heuristic: if it starts with uppercase, it's likely a model
         return model_name[0].isupper() and not model_name in ['Dict', 'List', 'Any', 'Optional']
+
+    def _is_pydantic_model_in_list(self, type_str: str, model_names: List[str]) -> bool:
+        """Check if the type string represents a Pydantic model in our generated models list."""
+        if not type_str or not model_names:
+            return False
+
+        # Extract base model name
+        model_name = self._extract_model_name(type_str)
+        if not model_name:
+            return False
+
+        # Check if the model name is in our generated models list
+        return model_name in model_names
 
     def _extract_model_name(self, type_str: str) -> str:
         """Extract model name from type string (handles List[Model] -> Model)."""
