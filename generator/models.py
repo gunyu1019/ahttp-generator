@@ -28,6 +28,7 @@ class ModelsGenerator:
             Tuple of (Dict mapping filenames to AST modules, list of generated model names)
         """
         schemas = extracted_data.get('schemas', {})
+        response_models = extracted_data.get('response_models', {})
         paths = extracted_data.get('paths', [])
 
         # Track generated model names
@@ -56,8 +57,14 @@ class ModelsGenerator:
             filename = self._to_snake_case(request_name) + '.py'
             model_modules[filename] = request_module
 
+        # Generate response.py file if there are response models
+        if response_models:
+            response_module, response_model_names = self._generate_response_module(response_models, model_names)
+            model_modules['response.py'] = response_module
+            model_names.extend(response_model_names)
+
         # Generate models/__init__.py
-        init_module = self._create_models_init_module(model_names)
+        init_module = self._create_models_init_module(model_names, bool(response_models))
         model_modules['__init__.py'] = init_module
         
         return model_modules, model_names
@@ -149,20 +156,35 @@ class ModelsGenerator:
         
         return imports
     
-    def _create_models_init_module(self, model_names: List[str]) -> ast.Module:
+    def _create_models_init_module(self, model_names: List[str], has_response_models: bool = False) -> ast.Module:
         """Create __init__.py module that exports all models."""
         body = []
         
-        # Create import statements for each model
+        # Separate domain models and response models
+        domain_models = []
+        response_models = []
+
         for model_name in model_names:
+            if model_name.endswith('Response'):
+                response_models.append(model_name)
+            else:
+                domain_models.append(model_name)
+
+        # Create import statements for domain models (individual files)
+        for model_name in sorted(domain_models):
             filename = self._to_snake_case(model_name)
             import_stmt = self.ast_helper.create_relative_import(filename, [model_name])
             body.append(import_stmt)
         
+        # Import response models from response.py if exists
+        if response_models and has_response_models:
+            import_stmt = self.ast_helper.create_relative_import('response', sorted(response_models))
+            body.append(import_stmt)
+
         # Create __all__ list
         if model_names:
             all_list = ast.List(
-                elts=[ast.Constant(value=name) for name in model_names],
+                elts=[ast.Constant(value=name) for name in sorted(model_names)],
                 ctx=ast.Load()
             )
             all_assign = self.ast_helper.create_assign('__all__', all_list)
@@ -304,6 +326,113 @@ class ModelsGenerator:
         snake_case = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', pascal_case)
         snake_case = re.sub('([a-z0-9])([A-Z])', r'\1_\2', snake_case)
         return snake_case.lower()
+
+    def _generate_response_module(self, response_models: Dict[str, Dict[str, Any]], domain_models: List[str]) -> Tuple[ast.Module, List[str]]:
+        """Generate response.py module containing all response models."""
+        # Track generated response model names
+        response_model_names = []
+
+        # Create module body
+        body = []
+
+        # Analyze all response models to determine dependencies
+        required_domain_models = set()
+        for model_name, model_schema in response_models.items():
+            deps = self._analyze_model_dependencies(model_schema, domain_models)
+            required_domain_models.update(deps)
+
+        # Create imports
+        imports = self._create_response_imports(list(required_domain_models))
+        body.extend(imports)
+
+        # Generate response model classes
+        for model_name, model_schema in response_models.items():
+            response_model_names.append(model_name)
+
+            # Create model class
+            model_class = self._create_model_class(model_name, model_schema, response_models)
+            body.append(model_class)
+
+        # Create and return module
+        module = ast.Module(body=body, type_ignores=[])
+        ast.fix_missing_locations(module)
+
+        return module, response_model_names
+
+    def _create_response_imports(self, required_domain_models: List[str]) -> List[ast.stmt]:
+        """Create import statements for response.py module."""
+        imports = []
+
+        # Import pydantic BaseModel
+        imports.append(self.ast_helper.create_import('pydantic', ['BaseModel']))
+
+        # Import typing components
+        typing_imports = []
+        # Always include these common types
+        typing_imports.extend(['List', 'Optional', 'Dict', 'Any'])
+
+        # Add datetime if needed
+        typing_imports.append('Union')
+
+        imports.append(self.ast_helper.create_import('typing', typing_imports))
+
+        # Import datetime if needed
+        imports.append(self.ast_helper.create_import('datetime', ['date', 'datetime']))
+
+        # Import required domain models
+        if required_domain_models:
+            for model_name in sorted(required_domain_models):
+                # Convert to snake_case for filename
+                filename = self._to_snake_case(model_name)
+                imports.append(self.ast_helper.create_relative_import(f'.{filename}', [model_name]))
+
+        return imports
+
+    def _analyze_model_dependencies(self, schema: Dict[str, Any], domain_models: List[str]) -> List[str]:
+        """Analyze model schema to find dependencies on domain models."""
+        dependencies = []
+
+        if not schema or not isinstance(schema, dict):
+            return dependencies
+
+        # Check properties for references to domain models
+        properties = schema.get('properties', {})
+        for prop_name, prop_schema in properties.items():
+            deps = self._find_type_dependencies(prop_schema, domain_models)
+            dependencies.extend(deps)
+
+        return list(set(dependencies))  # Remove duplicates
+
+    def _find_type_dependencies(self, schema: Dict[str, Any], domain_models: List[str]) -> List[str]:
+        """Recursively find type dependencies in schema."""
+        dependencies = []
+
+        if not schema or not isinstance(schema, dict):
+            return dependencies
+
+        # Check for $ref
+        if '$ref' in schema:
+            ref_path = schema['$ref']
+            if ref_path.startswith('#/components/schemas/'):
+                model_name = ref_path.split('/')[-1]
+                sanitized_name = self.type_mapper.sanitize_schema_name(model_name)
+                if sanitized_name in domain_models:
+                    dependencies.append(sanitized_name)
+
+        # Check for array items
+        elif schema.get('type') == 'array':
+            items = schema.get('items', {})
+            deps = self._find_type_dependencies(items, domain_models)
+            dependencies.extend(deps)
+
+        # Check for object properties
+        elif schema.get('type') == 'object':
+            properties = schema.get('properties', {})
+            for prop_schema in properties.values():
+                deps = self._find_type_dependencies(prop_schema, domain_models)
+                dependencies.extend(deps)
+
+        return dependencies
 
     def _generate_request_models(self, paths: List[Dict[str, Any]], schemas: Dict[str, Any]) -> Dict[str, ast.Module]:
         """Generate request body models from operation definitions."""

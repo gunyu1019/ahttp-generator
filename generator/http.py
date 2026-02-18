@@ -77,7 +77,23 @@ class HTTPGenerator:
 
         # Import models if any exist
         if model_names and len(model_names) > 0:
-            imports.append(self.ast_helper.create_relative_import('models', model_names))
+            # Separate domain models and response models
+            domain_models = []
+            response_models = []
+
+            for model_name in model_names:
+                if model_name.endswith('Response'):
+                    response_models.append(model_name)
+                else:
+                    domain_models.append(model_name)
+
+            # Import domain models from individual files
+            if domain_models:
+                imports.append(self.ast_helper.create_relative_import('models', domain_models))
+
+            # Import response models from response.py
+            if response_models:
+                imports.append(self.ast_helper.create_relative_import('models.response', response_models))
 
         # Import exceptions if any exist
         if status_code_mapping:

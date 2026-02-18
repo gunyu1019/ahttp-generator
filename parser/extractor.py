@@ -48,18 +48,20 @@ class OpenAPIExtractor:
         extracted_data['error_responses'] = all_error_responses
 
         # Collect inline response models from operations
-        inline_models = {}
+        inline_response_models = {}
         for operation in extracted_data['paths']:
             response_info = operation.get('responses', {})
             inline_model = response_info.get('inline_model')
             if inline_model:
                 model_name = inline_model['name']
                 model_schema = inline_model['schema']
-                inline_models[model_name] = model_schema
+                inline_response_models[model_name] = model_schema
 
-        # Add inline models to schemas for model generation
-        if inline_models:
-            extracted_data['schemas'].update(inline_models)
+        # Store response models separately from domain models
+        extracted_data['response_models'] = inline_response_models
+
+        # Do NOT add inline models to schemas (keep domain models separate)
+        # extracted_data['schemas'] remains only components/schemas models
 
         # Create status code to exception class mapping for HTTP hooks
         extracted_data['status_code_mapping'] = self._create_status_code_mapping(all_error_responses)
@@ -126,8 +128,15 @@ class OpenAPIExtractor:
         return operations
 
     def _extract_operation(self, path: str, method: str, operation: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract single operation data."""
+        """Extract single operation data with context injection for response model naming."""
         operation_id = operation.get('operationId', self._generate_operation_id(method, path))
+
+        # Step 1: Determine function name (using sanitizer for consistency)
+        from core.sanitizer import IdentifierSanitizer
+        func_name = IdentifierSanitizer.to_snake_case(operation_id)
+
+        # Step 2: Determine response model name with priority logic
+        suggested_model_name = self._determine_response_model_name(operation, func_name)
 
         return {
             'operation_id': operation_id,
@@ -136,8 +145,71 @@ class OpenAPIExtractor:
             'summary': operation.get('summary', ''),
             'parameters': self._extract_parameters(operation),
             'request_body': self._extract_request_body(operation),
-            'responses': self._extract_responses(operation),
+            'responses': self._extract_responses_with_context(operation, suggested_model_name),
             'error_responses': self._extract_error_responses(operation)
+        }
+
+    def _determine_response_model_name(self, operation: Dict[str, Any], func_name: str) -> str:
+        """
+        Determine response model name based on priority logic.
+
+        Priority 1: Operation ID (if exists)
+        Priority 2: Generated function name
+        """
+        # Priority 1: Use operation ID if available
+        if 'operationId' in operation and operation['operationId']:
+            base_name = operation['operationId']
+        else:
+            # Priority 2: Use generated function name
+            base_name = func_name
+
+        # Convert to PascalCase and add Response suffix
+        return self._to_pascal_case_response(base_name)
+
+    def _to_pascal_case_response(self, name: str) -> str:
+        """Convert snake_case or camelCase to PascalCase + Response suffix."""
+        from core.sanitizer import IdentifierSanitizer
+
+        # First sanitize to snake_case, then convert to PascalCase
+        snake_case = IdentifierSanitizer.to_snake_case(name)
+        words = snake_case.split('_')
+        pascal_case = ''.join(word.capitalize() for word in words if word)
+
+        # Add Response suffix if not present
+        if not pascal_case.endswith('Response'):
+            pascal_case += 'Response'
+
+        return pascal_case
+
+    def _extract_responses_with_context(self, operation: Dict[str, Any], model_name_hint: str) -> Dict[str, Any]:
+        """Extract response information with model name hint for context injection."""
+        responses = operation.get('responses', {})
+        operation_id = operation.get('operationId', 'unknown')
+
+        # Look for successful response (200, 201, etc.)
+        for status_code in ['200', '201', '202', '204']:
+            if status_code in responses:
+                response = responses[status_code]
+                content = response.get('content', {})
+
+                # Analyze content types with model name hint
+                response_info = self._analyze_response_content_with_hint(content, model_name_hint)
+                response_info['status_code'] = status_code
+                return response_info
+
+        # Fallback to first response
+        if responses:
+            first_response = list(responses.values())[0]
+            content = first_response.get('content', {})
+            response_info = self._analyze_response_content_with_hint(content, model_name_hint)
+            response_info['status_code'] = '200'
+            return response_info
+
+        return {
+            'status_code': '200',
+            'schema': {'type': 'object'},
+            'response_type': 'json',
+            'content_type': 'application/json'
         }
 
     def _resolve_ref(self, ref_path: str, spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -212,35 +284,15 @@ class OpenAPIExtractor:
         }
 
     def _extract_responses(self, operation: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract response information with MIME type filtering."""
-        responses = operation.get('responses', {})
-        operation_id = operation.get('operationId', 'unknown')
+        """Extract response information (legacy method - redirects to context-aware version)."""
+        # Get operation ID and generate function name for backward compatibility
+        operation_id = operation.get('operationId', self._generate_operation_id('get', '/unknown'))
+        from core.sanitizer import IdentifierSanitizer
+        func_name = IdentifierSanitizer.to_snake_case(operation_id)
+        suggested_model_name = self._determine_response_model_name(operation, func_name)
 
-        # Look for successful response (200, 201, etc.)
-        for status_code in ['200', '201', '202', '204']:
-            if status_code in responses:
-                response = responses[status_code]
-                content = response.get('content', {})
-
-                # Analyze content types to determine response type
-                response_info = self._analyze_response_content(content, operation_id)
-                response_info['status_code'] = status_code
-                return response_info
-
-        # Fallback to first response
-        if responses:
-            first_response = list(responses.values())[0]
-            content = first_response.get('content', {})
-            response_info = self._analyze_response_content(content, operation_id)
-            response_info['status_code'] = '200'
-            return response_info
-
-        return {
-            'status_code': '200',
-            'schema': {'type': 'object'},
-            'response_type': 'json',
-            'content_type': 'application/json'
-        }
+        # Call the context-aware version
+        return self._extract_responses_with_context(operation, suggested_model_name)
 
     def _analyze_response_content(self, content: Dict[str, Any], operation_id: str) -> Dict[str, Any]:
         """Analyze response content by MIME type and return appropriate schema info."""
@@ -323,9 +375,7 @@ class OpenAPIExtractor:
                     }
             elif items.get('type') == 'object' and 'properties' in items:
                 # Inline array item model
-                from core.sanitizer import IdentifierSanitizer
-                sanitized_op_id = IdentifierSanitizer.to_snake_case(operation_id)
-                model_name = ''.join(word.capitalize() for word in sanitized_op_id.split('_')) + 'ResponseItem'
+                model_name = self._generate_response_model_name(operation_id, 'Item')
                 return {
                     'python_type': f'List[{model_name}]',
                     'inline_model': {
@@ -337,9 +387,7 @@ class OpenAPIExtractor:
 
         # Check for inline object that needs a model
         elif schema.get('type') == 'object' and 'properties' in schema:
-            from core.sanitizer import IdentifierSanitizer
-            sanitized_op_id = IdentifierSanitizer.to_snake_case(operation_id)
-            model_name = ''.join(word.capitalize() for word in sanitized_op_id.split('_')) + 'Response'
+            model_name = self._generate_response_model_name(operation_id, 'Response')
             return {
                 'python_type': model_name,
                 'inline_model': {
@@ -354,6 +402,23 @@ class OpenAPIExtractor:
             'python_type': 'Dict[str, Any]',
             'inline_model': None
         }
+
+    def _generate_response_model_name(self, operation_id: str, suffix: str = 'Response') -> str:
+        """Generate unique response model name based on operation ID."""
+        from core.sanitizer import IdentifierSanitizer
+
+        if not operation_id or operation_id == 'unknown':
+            return f'Unknown{suffix}'
+
+        # Sanitize operation ID to snake_case first, then convert to PascalCase
+        sanitized_op_id = IdentifierSanitizer.to_snake_case(operation_id)
+
+        # Convert to PascalCase
+        words = sanitized_op_id.split('_')
+        pascal_case = ''.join(word.capitalize() for word in words if word)
+
+        # Add suffix
+        return f'{pascal_case}{suffix}'
 
     def _extract_error_responses(self, operation: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """Extract error response information (non-2xx status codes)."""
@@ -426,4 +491,113 @@ class OpenAPIExtractor:
 
         suffix = ''.join(word.capitalize() for word in path_parts)
         return prefix + suffix
+
+    def _analyze_response_content_with_hint(self, content: Dict[str, Any], model_name_hint: str) -> Dict[str, Any]:
+        """Analyze response content with model name hint for context injection."""
+        if not content:
+            return {
+                'schema': {'type': 'object'},
+                'response_type': 'json',
+                'content_type': 'application/json'
+            }
+
+        # Check each content type in order of preference
+        for content_type, content_spec in content.items():
+            content_type = content_type.lower()
+
+            # Case 1: Text content (text/*)
+            if content_type.startswith('text/'):
+                return {
+                    'schema': {'type': 'string'},
+                    'response_type': 'text',
+                    'content_type': content_type,
+                    'python_type': 'str'
+                }
+
+            # Case 2: JSON content (application/json or application/*+json)
+            elif (content_type == 'application/json' or
+                  (content_type.startswith('application/') and content_type.endswith('+json'))):
+
+                schema = content_spec.get('schema', {'type': 'object'})
+
+                # Check if this is an inline schema that needs a model
+                response_model_info = self._analyze_inline_schema_with_hint(schema, model_name_hint)
+
+                return {
+                    'schema': schema,
+                    'response_type': 'json',
+                    'content_type': content_type,
+                    'python_type': response_model_info.get('python_type', 'Dict[str, Any]'),
+                    'inline_model': response_model_info.get('inline_model'),
+                    'model_name': response_model_info.get('model_name')
+                }
+
+        # Case 3: Fallback for other types
+        first_content_type = list(content.keys())[0] if content else 'application/octet-stream'
+        first_content_spec = list(content.values())[0] if content else {}
+
+        return {
+            'schema': first_content_spec.get('schema', {'type': 'object'}),
+            'response_type': 'binary',
+            'content_type': first_content_type,
+            'python_type': 'bytes'
+        }
+
+    def _analyze_inline_schema_with_hint(self, schema: Dict[str, Any], model_name_hint: str) -> Dict[str, Any]:
+        """Analyze schema with model name hint for proper context injection."""
+        # If it's a $ref, use existing model
+        if '$ref' in schema:
+            ref_path = schema['$ref']
+            if ref_path.startswith('#/components/schemas/'):
+                model_name = ref_path.split('/')[-1]
+                # Simple sanitization
+                sanitized_name = ''.join(word.capitalize() for word in model_name.split('_'))
+                return {
+                    'python_type': sanitized_name,
+                    'inline_model': None,
+                    'model_name': sanitized_name
+                }
+
+        # Check for array of models
+        elif schema.get('type') == 'array':
+            items = schema.get('items', {})
+            if '$ref' in items:
+                ref_path = items['$ref']
+                if ref_path.startswith('#/components/schemas/'):
+                    model_name = ref_path.split('/')[-1]
+                    sanitized_name = ''.join(word.capitalize() for word in model_name.split('_'))
+                    return {
+                        'python_type': f'List[{sanitized_name}]',
+                        'inline_model': None,
+                        'model_name': sanitized_name
+                    }
+            elif items.get('type') == 'object' and 'properties' in items:
+                # Inline array item model - use hint with Item suffix
+                item_model_name = model_name_hint.replace('Response', 'Item')
+                return {
+                    'python_type': f'List[{item_model_name}]',
+                    'inline_model': {
+                        'name': item_model_name,
+                        'schema': items
+                    },
+                    'model_name': item_model_name
+                }
+
+        # Check for inline object that needs a model - USE THE HINT!
+        elif schema.get('type') == 'object' and 'properties' in schema:
+            # This is the key fix - use the provided model name hint instead of generating one
+            return {
+                'python_type': model_name_hint,
+                'inline_model': {
+                    'name': model_name_hint,
+                    'schema': schema
+                },
+                'model_name': model_name_hint
+            }
+
+        # Fallback to generic dict
+        return {
+            'python_type': 'Dict[str, Any]',
+            'inline_model': None
+        }
 
