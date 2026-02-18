@@ -1,0 +1,192 @@
+"""
+OpenAPI specification extractor module.
+Extracts relevant information from OpenAPI specification for code generation.
+"""
+
+from typing import Dict, Any, List, Optional, Tuple
+import re
+
+
+class OpenAPIExtractor:
+    """Extracts structured data from OpenAPI specification."""
+
+    def extract(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract relevant information from OpenAPI specification.
+
+        Args:
+            spec: OpenAPI specification dictionary
+
+        Returns:
+            Dictionary containing extracted data for code generation
+        """
+        return {
+            'info': self._extract_info(spec),
+            'servers': self._extract_servers(spec),
+            'paths': self._extract_paths(spec),
+            'schemas': self._extract_schemas(spec),
+            'service_name': self._generate_service_name(spec)
+        }
+
+    def _extract_info(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract API information."""
+        info = spec.get('info', {})
+        return {
+            'title': info.get('title', 'API'),
+            'version': info.get('version', '1.0.0'),
+            'description': info.get('description', '')
+        }
+
+    def _extract_servers(self, spec: Dict[str, Any]) -> List[str]:
+        """Extract server URLs."""
+        servers = spec.get('servers', [])
+        if not servers:
+            return ['https://api.example.com']
+
+        return [server.get('url', 'https://api.example.com') for server in servers]
+
+    def _extract_paths(self, spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract API paths and operations."""
+        paths = spec.get('paths', {})
+        operations = []
+
+        for path, path_item in paths.items():
+            for method, operation in path_item.items():
+                if method.lower() in ['get', 'post', 'put', 'delete', 'patch', 'head', 'options']:
+                    op_data = self._extract_operation(path, method.upper(), operation)
+                    operations.append(op_data)
+
+        return operations
+
+    def _extract_operation(self, path: str, method: str, operation: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract single operation data."""
+        operation_id = operation.get('operationId', self._generate_operation_id(method, path))
+
+        return {
+            'operation_id': operation_id,
+            'method': method,
+            'path': path,
+            'summary': operation.get('summary', ''),
+            'parameters': self._extract_parameters(operation),
+            'request_body': self._extract_request_body(operation),
+            'responses': self._extract_responses(operation)
+        }
+
+    def _extract_parameters(self, operation: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract operation parameters."""
+        parameters = operation.get('parameters', [])
+        result = []
+
+        for param in parameters:
+            # Copy the full parameter object, ensuring schema is properly preserved
+            param_data = {
+                'name': param.get('name', ''),
+                'in': param.get('in', 'query'),  # path, query, header, cookie
+                'required': param.get('required', False),
+                'schema': param.get('schema', {'type': 'string'}),
+                # Preserve original for debugging
+                'type': param.get('schema', {}).get('type', 'string')
+            }
+            result.append(param_data)
+
+        return result
+
+    def _extract_request_body(self, operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Extract request body information."""
+        request_body = operation.get('requestBody')
+        if not request_body:
+            return None
+
+        content = request_body.get('content', {})
+        json_content = content.get('application/json', {})
+        schema = json_content.get('schema', {})
+
+        return {
+            'required': request_body.get('required', False),
+            'schema': schema
+        }
+
+    def _extract_responses(self, operation: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract response information."""
+        responses = operation.get('responses', {})
+
+        # Look for successful response (200, 201, etc.)
+        for status_code in ['200', '201', '202', '204']:
+            if status_code in responses:
+                response = responses[status_code]
+                content = response.get('content', {})
+                json_content = content.get('application/json', {})
+                schema = json_content.get('schema', {'type': 'object'})
+
+                return {
+                    'status_code': status_code,
+                    'schema': schema
+                }
+
+        # Fallback to first response
+        if responses:
+            first_response = list(responses.values())[0]
+            content = first_response.get('content', {})
+            json_content = content.get('application/json', {})
+            schema = json_content.get('schema', {'type': 'object'})
+
+            return {
+                'status_code': '200',
+                'schema': schema
+            }
+
+        return {
+            'status_code': '200',
+            'schema': {'type': 'object'}
+        }
+
+    def _extract_schemas(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract component schemas."""
+        components = spec.get('components', {})
+        schemas = components.get('schemas', {})
+        return schemas
+
+    def _generate_service_name(self, spec: Dict[str, Any]) -> str:
+        """Generate service class name from API info."""
+        info = spec.get('info', {})
+        title = info.get('title', 'API')
+
+        # Clean up common suffixes and words
+        title = re.sub(r'\b(API|api|Api)\b', '', title)
+        title = title.strip()
+
+        # Convert to PascalCase and add Service suffix
+        words = re.findall(r'[a-zA-Z0-9]+', title)
+        name = ''.join(word.capitalize() for word in words if word)
+
+        if not name:
+            name = 'Api'
+
+        if not name.endswith('Service'):
+            name += 'Service'
+
+        return name
+
+    def _generate_operation_id(self, method: str, path: str) -> str:
+        """Generate operation ID from method and path."""
+        # Convert path to camelCase method name
+        path_parts = [part for part in path.split('/') if part and not part.startswith('{')]
+        method_lower = method.lower()
+
+        if not path_parts:
+            return method_lower
+
+        if method_lower == 'get':
+            prefix = 'get' if len(path_parts) > 1 else 'list'
+        elif method_lower == 'post':
+            prefix = 'create'
+        elif method_lower == 'put':
+            prefix = 'update'
+        elif method_lower == 'delete':
+            prefix = 'delete'
+        else:
+            prefix = method_lower
+
+        suffix = ''.join(word.capitalize() for word in path_parts)
+        return prefix + suffix
+
