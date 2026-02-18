@@ -44,7 +44,39 @@ class OpenAPIExtractor:
 
         extracted_data['error_responses'] = all_error_responses
 
+        # Create status code to exception class mapping for HTTP hooks
+        extracted_data['status_code_mapping'] = self._create_status_code_mapping(all_error_responses)
+
         return extracted_data
+
+    def _create_status_code_mapping(self, error_responses: Dict[str, Dict[str, Any]]) -> Dict[int, str]:
+        """Create mapping from status codes to exception class names."""
+
+        # Status code to exception name mapping (duplicated to avoid circular import)
+        STATUS_CODE_NAMES = {
+            '400': 'BadRequestError',
+            '401': 'UnauthorizedError',
+            '403': 'ForbiddenError',
+            '404': 'NotFoundError',
+            '405': 'MethodNotAllowedError',
+            '409': 'ConflictError',
+            '422': 'UnprocessableEntityError',
+            '429': 'TooManyRequestsError',
+            '500': 'InternalServerError',
+            '502': 'BadGatewayError',
+            '503': 'ServiceUnavailableError',
+            '504': 'GatewayTimeoutError'
+        }
+
+        mapping = {}
+        for status_code in error_responses.keys():
+            if status_code in STATUS_CODE_NAMES:
+                mapping[int(status_code)] = STATUS_CODE_NAMES[status_code]
+            else:
+                # Fallback for unknown status codes
+                mapping[int(status_code)] = f'HttpError{status_code}'
+
+        return mapping
 
     def _extract_info(self, spec: Dict[str, Any]) -> Dict[str, Any]:
         """Extract API information."""
