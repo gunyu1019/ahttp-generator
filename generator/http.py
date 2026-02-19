@@ -367,15 +367,15 @@ class HTTPGenerator:
             )
         ]
 
-        # Store authentication parameters as instance variables (not directly in headers/cookies)
+        # Store authentication parameters as instance variables (PRIVATE for security)
         for scheme in security_schemes:
             arg_name = scheme['arg_name']
-            # Create assignment: self.{arg_name} = {arg_name}
+            # Create assignment: self.__{arg_name} = {arg_name} (Name Mangling for security)
             assignment = ast.Assign(
                 targets=[
                     ast.Attribute(
                         value=ast.Name(id='self', ctx=ast.Load()),
-                        attr=arg_name,
+                        attr=f'__{arg_name}',  # Apply name mangling with double underscore
                         ctx=ast.Store()
                     )
                 ],
@@ -468,16 +468,16 @@ class HTTPGenerator:
             key = scheme['key']
             format_str = scheme.get('format', '{}')
 
-            # Create condition: if self.{arg_name}:
+            # Create condition: if self.__{arg_name}: (Private attribute access)
             condition = ast.Attribute(
                 value=ast.Name(id='self', ctx=ast.Load()),
-                attr=arg_name,
+                attr=f'__{arg_name}',  # Access private attribute with name mangling
                 ctx=ast.Load()
             )
 
             # Create assignment based on target type
             if target == 'header':
-                # request.headers['{key}'] = format_str.format(self.{arg_name})
+                # request.headers['{key}'] = format_str.format(self.__{arg_name})
                 if '{}' in format_str and format_str != '{}':
                     # Format string like "Bearer {}"
                     value_expr = ast.Call(
@@ -489,7 +489,7 @@ class HTTPGenerator:
                         args=[
                             ast.Attribute(
                                 value=ast.Name(id='self', ctx=ast.Load()),
-                                attr=arg_name,
+                                attr=f'__{arg_name}',  # Private attribute access
                                 ctx=ast.Load()
                             )
                         ],
@@ -499,7 +499,7 @@ class HTTPGenerator:
                     # Direct value
                     value_expr = ast.Attribute(
                         value=ast.Name(id='self', ctx=ast.Load()),
-                        attr=arg_name,
+                        attr=f'__{arg_name}',  # Private attribute access
                         ctx=ast.Load()
                     )
 
@@ -519,7 +519,7 @@ class HTTPGenerator:
                 )
 
             elif target == 'cookie':
-                # request.cookies['{key}'] = self.{arg_name}
+                # request.cookies['{key}'] = self.__{arg_name}
                 assignment = ast.Assign(
                     targets=[
                         ast.Subscript(
@@ -534,13 +534,13 @@ class HTTPGenerator:
                     ],
                     value=ast.Attribute(
                         value=ast.Name(id='self', ctx=ast.Load()),
-                        attr=arg_name,
+                        attr=f'__{arg_name}',  # Private attribute access
                         ctx=ast.Load()
                     )
                 )
 
             elif target == 'query':
-                # request.params['{key}'] = self.{arg_name}
+                # request.params['{key}'] = self.__{arg_name}
                 assignment = ast.Assign(
                     targets=[
                         ast.Subscript(
@@ -555,7 +555,7 @@ class HTTPGenerator:
                     ],
                     value=ast.Attribute(
                         value=ast.Name(id='self', ctx=ast.Load()),
-                        attr=arg_name,
+                        attr=f'__{arg_name}',  # Private attribute access
                         ctx=ast.Load()
                     )
                 )
