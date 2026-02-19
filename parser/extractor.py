@@ -67,6 +67,9 @@ class OpenAPIExtractor:
         # CRITICAL: Deduplicate function names to prevent method overrides
         self._deduplicate_function_names(extracted_data['paths'])
 
+        # Extract enums
+        extracted_data['enums'] = self._extract_enums(spec)
+
         # Create status code to exception class mapping for HTTP hooks
         extracted_data['status_code_mapping'] = self._create_status_code_mapping(all_error_responses)
 
@@ -582,10 +585,32 @@ class OpenAPIExtractor:
         return json_content.get('schema', {'type': 'object'})
 
     def _extract_schemas(self, spec: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract component schemas."""
+        """Extract component schemas with documentation metadata."""
         components = spec.get('components', {})
         schemas = components.get('schemas', {})
-        return schemas
+        
+        # Enrich schemas with documentation metadata
+        enriched_schemas = {}
+        for schema_name, schema_def in schemas.items():
+            enriched_schema = schema_def.copy()
+            
+            # Extract schema-level documentation
+            enriched_schema['_doc_summary'] = schema_def.get('summary')
+            enriched_schema['_doc_description'] = schema_def.get('description')
+            
+            # Extract property-level documentation  
+            if 'properties' in schema_def:
+                enriched_properties = {}
+                for prop_name, prop_def in schema_def['properties'].items():
+                    enriched_prop = prop_def.copy()
+                    enriched_prop['_doc_description'] = prop_def.get('description')
+                    enriched_properties[prop_name] = enriched_prop
+                    
+                enriched_schema['properties'] = enriched_properties
+            
+            enriched_schemas[schema_name] = enriched_schema
+        
+        return enriched_schemas
 
     def _generate_service_name(self, spec: Dict[str, Any]) -> str:
         """Generate service class name from API info."""
@@ -974,3 +999,171 @@ class OpenAPIExtractor:
         #     if func_name in used_names:
         #         print(f"ERROR: Deduplication failed - '{func_name}' is still duplicated!")
         #     used_names.add(func_name)
+
+    def _extract_enums(self, spec: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract all enums from the OpenAPI specification.
+        
+        Returns a dictionary mapping enum names to their definitions.
+        """
+        enums = {}
+        
+        # Extract enums from schemas
+        components = spec.get('components', {})
+        schemas = components.get('schemas', {})
+        
+        for schema_name, schema_def in schemas.items():
+            schema_enums = self._extract_schema_enums(schema_def, schema_name)
+            enums.update(schema_enums)
+        
+        # Extract enums from parameters in paths
+        paths = spec.get('paths', {})
+        for path, path_def in paths.items():
+            for method, operation in path_def.items():
+                if method.lower() in ['get', 'post', 'put', 'delete', 'patch', 'head', 'options']:
+                    param_enums = self._extract_parameter_enums(operation)
+                    enums.update(param_enums)
+        
+        return enums
+
+    def _extract_schema_enums(self, schema: Dict[str, Any], context_name: str) -> Dict[str, Dict[str, Any]]:
+        """Extract enums from a schema definition."""
+        enums = {}
+        
+        # Check if schema itself is an enum
+        if schema.get('type') == 'string' and 'enum' in schema:
+            enum_name = self._generate_enum_name(context_name)
+            enums[enum_name] = {
+                'values': schema['enum'],
+                'type': 'string',
+                'context': f'schema:{context_name}'
+            }
+        
+        # Check properties for enums
+        if 'properties' in schema:
+            for prop_name, prop_def in schema['properties'].items():
+                if prop_def.get('type') == 'string' and 'enum' in prop_def:
+                    enum_name = self._generate_enum_name(prop_name)
+                    enums[enum_name] = {
+                        'values': prop_def['enum'],
+                        'type': 'string',
+                        'context': f'schema:{context_name}.{prop_name}'
+                    }
+                
+                # Recursively check nested objects
+                if prop_def.get('type') == 'object':
+                    nested_enums = self._extract_schema_enums(prop_def, f"{context_name}_{prop_name}")
+                    enums.update(nested_enums)
+                
+                # Check array items
+                if prop_def.get('type') == 'array' and 'items' in prop_def:
+                    items = prop_def['items']
+                    if items.get('type') == 'string' and 'enum' in items:
+                        enum_name = self._generate_enum_name(prop_name)
+                        enums[enum_name] = {
+                            'values': items['enum'],
+                            'type': 'string',
+                            'context': f'schema:{context_name}.{prop_name}[]'
+                        }
+                    elif items.get('type') == 'object':
+                        nested_enums = self._extract_schema_enums(items, f"{context_name}_{prop_name}_item")
+                        enums.update(nested_enums)
+        
+        return enums
+
+    def _extract_parameter_enums(self, operation: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Extract enums from operation parameters."""
+        enums = {}
+        parameters = operation.get('parameters', [])
+        
+        for param in parameters:
+            # Resolve reference if needed
+            if '$ref' in param:
+                resolved_param = self._resolve_ref(param['$ref'], self.spec)
+                if resolved_param:
+                    param = resolved_param
+                else:
+                    continue
+            
+            param_name = param.get('name', '')
+            schema = param.get('schema', param)  # Some parameters have schema nested
+            
+            if schema.get('type') == 'string' and 'enum' in schema:
+                enum_name = self._generate_enum_name(param_name)
+                enums[enum_name] = {
+                    'values': schema['enum'],
+                    'type': 'string',
+                    'context': f'parameter:{param_name}'
+                }
+        
+        return enums
+
+    def _generate_enum_name(self, field_name: str) -> str:
+        """
+        Generate PascalCase enum name from field/parameter name.
+        
+        Args:
+            field_name: The field or parameter name
+            
+        Returns:
+            PascalCase enum name with 'Enum' suffix
+        """
+        # Convert to PascalCase
+        # Handle snake_case, camelCase, and other formats
+        words = []
+        
+        # Split by common separators
+        for separator in ['_', '-', ' ']:
+            field_name = field_name.replace(separator, '|')
+        
+        parts = field_name.split('|')
+        for part in parts:
+            if part:
+                # Handle camelCase by splitting on uppercase letters
+                import re
+                subparts = re.findall(r'[A-Z]*[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)', part)
+                if not subparts:  # If no match, use the whole part
+                    subparts = [part]
+                words.extend(subparts)
+        
+        # Capitalize each word and join
+        pascal_case = ''.join(word.capitalize() for word in words if word)
+        
+        # Add Enum suffix if not present
+        if not pascal_case.endswith('Enum'):
+            pascal_case += 'Enum'
+        
+        return pascal_case
+
+    def _sanitize_enum_member_name(self, value: str) -> str:
+        """
+        Convert enum value to valid Python identifier.
+        
+        Args:
+            value: The enum value from OpenAPI
+            
+        Returns:
+            Valid Python identifier in UPPER_SNAKE_CASE
+        """
+        # Convert to uppercase
+        result = value.upper()
+        
+        # Replace non-alphanumeric characters with underscore
+        import re
+        result = re.sub(r'[^A-Z0-9_]', '_', result)
+        
+        # Remove consecutive underscores
+        result = re.sub(r'_+', '_', result)
+        
+        # Remove leading/trailing underscores
+        result = result.strip('_')
+        
+        # If starts with digit, prepend with VALUE_
+        if result and result[0].isdigit():
+            result = f'VALUE_{result}'
+        
+        # If empty after processing, use generic name
+        if not result:
+            result = 'UNKNOWN'
+        
+        return result

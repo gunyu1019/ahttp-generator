@@ -4,7 +4,7 @@ Generates individual model files with Pydantic BaseModel classes from OpenAPI sc
 """
 
 import ast
-from typing import Dict, Any, List, Tuple, Set
+from typing import Dict, Any, List, Tuple, Set, Optional
 
 from core.ast_helper import ASTHelper
 from core.type_mapper import TypeMapper
@@ -32,6 +32,7 @@ class ModelsGenerator:
         schemas = extracted_data.get('schemas', {})
         response_models = extracted_data.get('response_models', {})
         paths = extracted_data.get('paths', [])
+        enums = extracted_data.get('enums', {})
 
         # Track generated model names
         model_names = []
@@ -46,7 +47,7 @@ class ModelsGenerator:
             model_names.append(sanitized_name)
             
             # Create individual module for this model
-            module = self._create_individual_model_module(sanitized_name, schema_def, schemas)
+            module = self._create_individual_model_module(sanitized_name, schema_def, schemas, enums)
             
             # Generate filename (convert PascalCase to snake_case)
             filename = self._to_snake_case(sanitized_name) + '.py'
@@ -61,7 +62,7 @@ class ModelsGenerator:
 
         # Generate response.py file if there are response models
         if response_models:
-            response_module, response_model_names = self._generate_response_module(response_models, model_names)
+            response_module, response_model_names = self._generate_response_module(response_models, model_names, enums)
             model_modules['response.py'] = response_module
             model_names.extend(response_model_names)
 
@@ -100,22 +101,33 @@ class ModelsGenerator:
                         return True
         return False
 
-    def _create_individual_model_module(self, class_name: str, schema: Dict[str, Any], schemas: Dict[str, Any]) -> ast.Module:
+    def _create_individual_model_module(self, class_name: str, schema: Dict[str, Any], schemas: Dict[str, Any], enums: Dict[str, Any] = None) -> ast.Module:
         """Create an AST module for an individual model class."""
+        if enums is None:
+            enums = {}
+            
         # Analyze types used in this specific model
         types_used = {'BaseModel'}
         schema_types = self._analyze_schema_types(schema, schemas)
         types_used.update(schema_types)
         
+        # Find enums needed for this model
+        model_enums = self._find_enums_for_model(schema, enums, class_name)
+        
         # Create module body
         body = []
         
         # Add imports
-        imports = self._create_imports_for_single_model(types_used, schema, schemas, class_name)
+        imports = self._create_imports_for_single_model(types_used, schema, schemas, class_name, model_enums)
         body.extend(imports)
         
+        # Add enum classes before the model class
+        for enum_name, enum_def in model_enums.items():
+            enum_class = self._create_enum_class(enum_name, enum_def)
+            body.append(enum_class)
+        
         # Add model class
-        model_class = self._create_model_class(class_name, schema, schemas)
+        model_class = self._create_model_class(class_name, schema, schemas, model_enums)
         body.append(model_class)
         
         # Create and return module
@@ -124,12 +136,19 @@ class ModelsGenerator:
         
         return module
     
-    def _create_imports_for_single_model(self, types_used: Set[str], schema: Dict[str, Any], schemas: Dict[str, Any], class_name: str) -> List[ast.stmt]:
+    def _create_imports_for_single_model(self, types_used: Set[str], schema: Dict[str, Any], schemas: Dict[str, Any], class_name: str, model_enums: Dict[str, Any] = None) -> List[ast.stmt]:
         """Create import statements for a single model file."""
         imports = []
         
+        if model_enums is None:
+            model_enums = {}
+        
         # Pydantic import
         imports.append(self.ast_helper.create_import('pydantic', ['BaseModel']))
+        
+        # Enum import if we have enums
+        if model_enums:
+            imports.append(self.ast_helper.create_import('enum', ['Enum']))
         
         # Typing imports
         typing_imports = ['Optional']  # Always include Optional
@@ -153,7 +172,7 @@ class ModelsGenerator:
 
         # Add other imports (datetime, etc.)
         for module_name, import_names in type_imports.items():
-            if module_name not in ['typing'] and import_names:
+            if module_name not in ['typing', 'enum'] and import_names:
                 imports.append(self.ast_helper.create_import(module_name, import_names))
         
         return imports
@@ -233,18 +252,20 @@ class ModelsGenerator:
 
         return types_used
     
-    def _create_model_class(self, class_name: str, schema: Dict[str, Any], schemas: Dict[str, Any]) -> ast.ClassDef:
+    def _create_model_class(self, class_name: str, schema: Dict[str, Any], schemas: Dict[str, Any], model_enums: Dict[str, Any] = None) -> ast.ClassDef:
         """Create a Pydantic model class."""
+        if model_enums is None:
+            model_enums = {}
+            
         body = []
         
         # Store current class name for field annotation context
         self._current_class_name = class_name
         
-        # Add docstring if description exists
-        description = schema.get('description')
-        if description:
-            docstring = ast.Expr(value=ast.Constant(value=description))
-            body.append(docstring)
+        # Add class docstring from summary and description
+        class_docstring = self._create_class_docstring(schema)
+        if class_docstring:
+            body.append(class_docstring)
         
         # Add properties
         properties = schema.get('properties', {})
@@ -259,7 +280,7 @@ class ModelsGenerator:
                 self._current_field_name = prop_name
                 
                 is_required = prop_name in required_fields
-                field_annotation = self._create_field_annotation(prop_schema, schemas, is_required)
+                field_annotation = self._create_field_annotation(prop_schema, schemas, is_required, model_enums)
                 
                 # Create field assignment
                 field_assign = self.ast_helper.create_ann_assign(
@@ -267,6 +288,11 @@ class ModelsGenerator:
                     annotation=field_annotation
                 )
                 body.append(field_assign)
+                
+                # Add field docstring if description exists
+                field_docstring = self._create_field_docstring(prop_schema)
+                if field_docstring:
+                    body.append(field_docstring)
         
         # Clean up context
         self._current_class_name = None
@@ -279,7 +305,7 @@ class ModelsGenerator:
             body=body
         )
     
-    def _create_field_annotation(self, prop_schema: Dict[str, Any], schemas: Dict[str, Any], is_required: bool) -> ast.expr:
+    def _create_field_annotation(self, prop_schema: Dict[str, Any], schemas: Dict[str, Any], is_required: bool, model_enums: Dict[str, Any] = None) -> ast.expr:
         """Create type annotation for a model field."""
         # Special handling for inline array schemas
         if prop_schema.get('type') == 'array' and 'items' in prop_schema:
@@ -378,7 +404,11 @@ class ModelsGenerator:
                     return self._parse_type_string(array_type)
         
         # Normal processing for non-array fields
-        type_str, _ = self.type_mapper.map_schema_to_type(prop_schema, schemas)
+        # Check if this should use enum type instead
+        if model_enums and hasattr(self, '_current_field_name'):
+            type_str = self._update_property_type_with_enum(prop_schema, self._current_field_name, model_enums)
+        else:
+            type_str, _ = self.type_mapper.map_schema_to_type(prop_schema, schemas)
         
         # Handle optional fields
         if not is_required:
@@ -478,7 +508,7 @@ class ModelsGenerator:
         snake_case = re.sub('([a-z0-9])([A-Z])', r'\1_\2', snake_case)
         return snake_case.lower()
 
-    def _generate_response_module(self, response_models: Dict[str, Dict[str, Any]], domain_models: List[str]) -> Tuple[ast.Module, List[str]]:
+    def _generate_response_module(self, response_models: Dict[str, Dict[str, Any]], domain_models: List[str], enums: Dict[str, Any] = None) -> Tuple[ast.Module, List[str]]:
         """Generate response.py module containing all response models."""
         # Track generated response model names
         response_model_names = []
@@ -500,8 +530,8 @@ class ModelsGenerator:
         for model_name, model_schema in response_models.items():
             response_model_names.append(model_name)
 
-            # Create model class
-            model_class = self._create_model_class(model_name, model_schema, response_models)
+            # Create model class (TODO: Add enum support for response models)
+            model_class = self._create_model_class(model_name, model_schema, response_models, {})
             body.append(model_class)
 
         # Create and return module
@@ -586,7 +616,7 @@ class ModelsGenerator:
 
         return dependencies
 
-    def _generate_request_models(self, paths: List[Dict[str, Any]], schemas: Dict[str, Any]) -> Dict[str, ast.Module]:
+    def _generate_request_models(self, paths: List[Dict[str, Any]], schemas: Dict[str, Any], enums: Dict[str, Any] = None) -> Dict[str, ast.Module]:
         """Generate request body models from operation definitions."""
         request_models = {}
 
@@ -645,8 +675,8 @@ class ModelsGenerator:
         imports = self._create_imports_for_single_model(types_used, schema, schemas, class_name)
         body.extend(imports)
 
-        # Add model class
-        model_class = self._create_model_class(class_name, schema, schemas)
+        # Add model class (TODO: Add enum support for request models)
+        model_class = self._create_model_class(class_name, schema, schemas, {})
         body.append(model_class)
 
         # Create and return module
@@ -654,4 +684,146 @@ class ModelsGenerator:
         ast.fix_missing_locations(module)
 
         return module
+
+    def _create_class_docstring(self, schema: Dict[str, Any]) -> Optional[ast.Expr]:
+        """
+        Create class docstring from schema summary and description.
+        
+        Args:
+            schema: OpenAPI schema definition
+            
+        Returns:
+            AST Expr node with docstring or None if no documentation
+        """
+        summary = schema.get('_doc_summary')
+        description = schema.get('_doc_description')
+        
+        # Also check direct fields for backward compatibility  
+        if not summary:
+            summary = schema.get('summary')
+        if not description:
+            description = schema.get('description')
+        
+        # Build docstring content
+        docstring_parts = []
+        
+        if summary and summary.strip():
+            docstring_parts.append(summary.strip())
+        
+        if description and description.strip():
+            # Add description after summary
+            if docstring_parts:
+                docstring_parts.append('')  # Empty line between summary and description
+            docstring_parts.append(description.strip())
+        
+        # Return None if no content
+        if not docstring_parts:
+            return None
+        
+        # Combine parts
+        docstring_content = '\n'.join(docstring_parts)
+        
+        return ast.Expr(value=ast.Constant(value=docstring_content))
+
+    def _create_field_docstring(self, prop_schema: Dict[str, Any]) -> Optional[ast.Expr]:
+        """
+        Create field docstring from property description.
+        
+        Args:
+            prop_schema: OpenAPI property schema definition
+            
+        Returns:
+            AST Expr node with docstring or None if no documentation
+        """
+        description = prop_schema.get('_doc_description')
+        
+        # Also check direct field for backward compatibility
+        if not description:
+            description = prop_schema.get('description')
+        
+        if not description or not description.strip():
+            return None
+        
+        return ast.Expr(value=ast.Constant(value=description.strip()))
+
+    def _find_enums_for_model(self, schema: Dict[str, Any], enums: Dict[str, Any], context_name: str) -> Dict[str, Dict[str, Any]]:
+        """Find all enums needed for a specific model."""
+        model_enums = {}
+        
+        # Check properties for enums
+        properties = schema.get('properties', {})
+        for prop_name, prop_schema in properties.items():
+            prop_enum_name = self._find_property_enum(prop_schema, prop_name, enums)
+            if prop_enum_name and prop_enum_name in enums:
+                model_enums[prop_enum_name] = enums[prop_enum_name]
+        
+        return model_enums
+
+    def _find_property_enum(self, prop_schema: Dict[str, Any], prop_name: str, enums: Dict[str, Any]) -> Optional[str]:
+        """Find enum name for a property schema."""
+        # Direct enum check
+        if prop_schema.get('type') == 'string' and 'enum' in prop_schema:
+            expected_enum_name = self.type_mapper._generate_enum_name(prop_name)
+            return expected_enum_name if expected_enum_name in enums else None
+        
+        # Array of enums
+        if prop_schema.get('type') == 'array':
+            items = prop_schema.get('items', {})
+            if items.get('type') == 'string' and 'enum' in items:
+                expected_enum_name = self.type_mapper._generate_enum_name(prop_name)
+                return expected_enum_name if expected_enum_name in enums else None
+        
+        return None
+
+    def _create_enum_class(self, enum_name: str, enum_def: Dict[str, Any]) -> ast.ClassDef:
+        """Create an enum class AST node."""
+        # Create class bases (str, Enum)
+        bases = [
+            ast.Name(id='str', ctx=ast.Load()),
+            ast.Name(id='Enum', ctx=ast.Load())
+        ]
+        
+        # Create enum members
+        body = []
+        values = enum_def.get('values', [])
+        
+        for value in values:
+            # Sanitize member name
+            member_name = self.type_mapper.sanitize_enum_member_name(value)
+            
+            # Create assignment: MEMBER_NAME = "original_value"
+            assignment = ast.Assign(
+                targets=[ast.Name(id=member_name, ctx=ast.Store())],
+                value=ast.Constant(value=value)
+            )
+            body.append(assignment)
+        
+        if not body:
+            body.append(ast.Pass())
+        
+        # Create the class
+        enum_class = ast.ClassDef(
+            name=enum_name,
+            bases=bases,
+            keywords=[],
+            body=body,
+            decorator_list=[]
+        )
+        
+        return enum_class
+
+    def _update_property_type_with_enum(self, prop_schema: Dict[str, Any], prop_name: str, model_enums: Dict[str, Any]) -> str:
+        """Update property type to use enum class instead of str."""
+        # Check if this property has an enum
+        enum_name = self._find_property_enum(prop_schema, prop_name, model_enums)
+        if enum_name:
+            # Handle array of enums
+            if prop_schema.get('type') == 'array':
+                return f'List[{enum_name}]'
+            else:
+                return enum_name
+        
+        # Fall back to normal type mapping
+        type_str, _ = self.type_mapper.map_schema_to_type(prop_schema)
+        return type_str
 

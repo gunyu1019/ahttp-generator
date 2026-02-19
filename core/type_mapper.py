@@ -2,7 +2,7 @@
 Type mapping utilities for converting OpenAPI types to Python types.
 """
 
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 
 class TypeMapper:
@@ -53,6 +53,11 @@ class TypeMapper:
                 schema_name = ref_path.split('/')[-1]
                 return schema_name, False
             return 'Any', False
+
+        # Handle enum types
+        # if cls._is_enum_schema(schema):
+        #     enum_name = cls._generate_enum_name_from_context(schema, schemas)
+        #     return enum_name, False
 
         # Handle type
         schema_type = schema.get('type', 'object')
@@ -118,9 +123,15 @@ class TypeMapper:
         schema = param_schema.get('schema', param_schema)
         param_type = schema.get('type', 'string')
         param_in = param_schema.get('in', 'query')
+        param_name = param_schema.get('name', '')
 
-        # Map the basic type
-        python_type = cls.TYPE_MAPPING.get(param_type, 'str')
+        # Check if this is an enum parameter
+        if cls._is_enum_schema(schema):
+            enum_name = cls._generate_enum_name(param_name)
+            python_type = enum_name
+        else:
+            # Map the basic type
+            python_type = cls.TYPE_MAPPING.get(param_type, 'str')
 
         # Map the annotation source based on parameter location
         annotation_mapping = {
@@ -175,6 +186,11 @@ class TypeMapper:
         if datetime_imports:
             imports['datetime'] = datetime_imports
 
+        # Check for enum imports (if any type ends with 'Enum')
+        enum_types = [t for t in types_used if str(t).endswith('Enum')]
+        if enum_types:
+            imports['enum'] = ['Enum']
+
         return imports
 
     @classmethod
@@ -197,4 +213,133 @@ class TypeMapper:
 
         # Ensure it starts with a capital letter
         return name[0].upper() + name[1:] if len(name) > 1 else name.upper()
+
+    @classmethod
+    def _is_enum_schema(cls, schema: Dict[str, Any]) -> bool:
+        """
+        Check if a schema definition represents an enum.
+
+        Args:
+            schema: Schema definition
+
+        Returns:
+            True if the schema is an enum
+        """
+        return (
+            schema.get('type') == 'string' and 
+            'enum' in schema and 
+            isinstance(schema['enum'], list) and 
+            len(schema['enum']) > 0
+        )
+
+    @classmethod
+    def _generate_enum_name_from_context(cls, schema: Dict[str, Any], schemas: Dict[str, Any]) -> str:
+        """
+        Generate enum name from schema context. 
+        This is a fallback - ideally enum names should come from the parser.
+
+        Args:
+            schema: Schema definition
+            schemas: All available schemas
+
+        Returns:
+            Generated enum class name
+        """
+        # Try to find the enum in schemas to get the proper name
+        for schema_name, schema_def in schemas.items():
+            if schema_def == schema:
+                return cls._generate_enum_name(schema_name)
+        
+        # Fallback: generate based on enum values
+        values = schema.get('enum', [])
+        if values:
+            first_value = str(values[0]).replace('-', '_').replace(' ', '_')
+            return f"{first_value.capitalize()}Enum"
+        
+        return "StringEnum"
+
+    @classmethod
+    def _generate_enum_name(cls, field_name: str) -> str:
+        """
+        Generate PascalCase enum name from field/parameter name.
+
+        Args:
+            field_name: The field or parameter name
+
+        Returns:
+            PascalCase enum name with 'Enum' suffix
+        """
+        # Convert to PascalCase
+        words = []
+        
+        # Split by common separators
+        for separator in ['_', '-', ' ']:
+            field_name = field_name.replace(separator, '|')
+        
+        parts = field_name.split('|')
+        for part in parts:
+            if part:
+                # Handle camelCase by splitting on uppercase letters
+                import re
+                subparts = re.findall(r'[A-Z]*[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)', part)
+                if not subparts:  # If no match, use the whole part
+                    subparts = [part]
+                words.extend(subparts)
+        
+        # Capitalize each word and join
+        pascal_case = ''.join(word.capitalize() for word in words if word)
+        
+        # Add Enum suffix if not present
+        if not pascal_case.endswith('Enum'):
+            pascal_case += 'Enum'
+        
+        return pascal_case
+
+    @classmethod
+    def map_enum_type(cls, enum_name: str, enum_values: List[str]) -> str:
+        """
+        Map enum definition to Python type string.
+
+        Args:
+            enum_name: Name of the enum class
+            enum_values: List of enum values
+
+        Returns:
+            Enum class name as type string
+        """
+        return enum_name
+
+    @classmethod 
+    def sanitize_enum_member_name(cls, value: str) -> str:
+        """
+        Convert enum value to valid Python identifier.
+
+        Args:
+            value: The enum value from OpenAPI
+
+        Returns:
+            Valid Python identifier in UPPER_SNAKE_CASE
+        """
+        # Convert to uppercase
+        result = value.upper()
+        
+        # Replace non-alphanumeric characters with underscore
+        import re
+        result = re.sub(r'[^A-Z0-9_]', '_', result)
+        
+        # Remove consecutive underscores
+        result = re.sub(r'_+', '_', result)
+        
+        # Remove leading/trailing underscores
+        result = result.strip('_')
+        
+        # If starts with digit, prepend with VALUE_
+        if result and result[0].isdigit():
+            result = f'VALUE_{result}'
+        
+        # If empty after processing, use generic name
+        if not result:
+            result = 'UNKNOWN'
+        
+        return result
 

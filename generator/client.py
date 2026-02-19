@@ -27,6 +27,7 @@ class ClientGenerator:
         service_name = extracted_data.get('service_name', 'ApiService')
         servers_info = extracted_data.get('servers', {'base_url': 'https://api.example.com', 'base_path': ''})
         base_url = servers_info.get('base_url', 'https://api.example.com')
+        enums = extracted_data.get('enums', {})
 
         # Create module body
         body = []
@@ -36,7 +37,7 @@ class ClientGenerator:
         body.extend(header)
 
         # Create client facade class (temporarily, to analyze typing needs)
-        temp_client_class = self._create_client_class(service_name, base_url, extracted_data)
+        temp_client_class = self._create_client_class(service_name, base_url, extracted_data, enums)
 
         # Create temporary module to analyze typing requirements
         temp_module = ast.Module(body=[temp_client_class], type_ignores=[])
@@ -60,6 +61,60 @@ class ClientGenerator:
         ast.fix_missing_locations(module)
 
         return module
+
+    def _get_parameter_type(self, param: Dict[str, Any], enums: Dict[str, Any]) -> str:
+        """
+        Get the appropriate type for a parameter, using enum if available.
+        
+        Args:
+            param: Parameter definition
+            enums: Available enums
+            
+        Returns:
+            Type string to use (enum name or 'str')
+        """
+        from core.type_mapper import TypeMapper
+        
+        param_name = param.get('name', '')
+        schema = param.get('schema', param)  # Some parameters have schema nested
+        
+        # Check if this parameter should use an enum
+        if schema.get('type') == 'string' and 'enum' in schema:
+            # Generate expected enum name
+            expected_enum_name = TypeMapper._generate_enum_name(param_name)
+            if expected_enum_name in enums:
+                return expected_enum_name
+        
+        # Default to str
+        return 'str'
+
+    def _collect_used_enums(self, paths: List[Dict[str, Any]], enums: Dict[str, Any]) -> Set[str]:
+        """
+        Collect all enum names used in operation parameters.
+        
+        Args:
+            paths: List of operation definitions
+            enums: Available enums
+            
+        Returns:
+            Set of enum names that are used
+        """
+        from core.type_mapper import TypeMapper
+        
+        used_enums = set()
+        
+        for operation in paths:
+            parameters = operation.get('parameters', [])
+            for param in parameters:
+                param_name = param.get('name', '')
+                schema = param.get('schema', param)
+                
+                if schema.get('type') == 'string' and 'enum' in schema:
+                    expected_enum_name = TypeMapper._generate_enum_name(param_name)
+                    if expected_enum_name in enums:
+                        used_enums.add(expected_enum_name)
+        
+        return used_enums
 
     def _create_imports(self, service_name: str, model_names: List[str], extracted_data: Dict[str, Any], required_typing: Set[str] = None) -> List[ast.stmt]:
         """Create import statements for facade layer with response model separation."""
@@ -93,14 +148,23 @@ class ClientGenerator:
         if used_response_models:
             imports.append(self.ast_helper.create_relative_import('models.response', sorted(used_response_models)))
 
+        # Import enums that are used
+        enums = extracted_data.get('enums', {})
+        used_enums = self._collect_used_enums(paths, enums)
+        if used_enums:
+            imports.append(self.ast_helper.create_relative_import('models', sorted(used_enums)))
+
         # Add any required typing imports (e.g., List, Dict)
         if required_typing:
             imports.extend(self.ast_helper.create_imports_from_typing(required_typing))
 
         return imports
 
-    def _create_client_class(self, service_name: str, base_url: str, extracted_data: Dict[str, Any]) -> ast.ClassDef:
+    def _create_client_class(self, service_name: str, base_url: str, extracted_data: Dict[str, Any], enums: Dict[str, Any] = None) -> ast.ClassDef:
         """Create client facade class definition."""
+        if enums is None:
+            enums = {}
+            
         # Generate client class name: ApiService -> ApiClient
         client_class_name = service_name.replace('Service', 'Client')
         http_class_name = service_name.replace('Service', 'HTTP')
@@ -126,7 +190,7 @@ class ClientGenerator:
         paths = extracted_data.get('paths', [])
 
         for operation in paths:
-            method_def = self._create_facade_operation_method(operation)
+            method_def = self._create_facade_operation_method(operation, enums)
             class_body.append(method_def)
 
         # Create class (no inheritance - standalone class)
@@ -283,8 +347,11 @@ class ClientGenerator:
 
         return ast.fix_missing_locations(func_def)
 
-    def _create_facade_operation_method(self, operation: Dict[str, Any]) -> ast.FunctionDef:
+    def _create_facade_operation_method(self, operation: Dict[str, Any], enums: Dict[str, Any] = None) -> ast.FunctionDef:
         """Create facade operation method that delegates to HTTP implementation with correct return types."""
+        if enums is None:
+            enums = {}
+            
         operation_id = operation.get('operation_id', 'operation')
         parameters = operation.get('parameters', [])
         request_body = operation.get('request_body')
@@ -332,12 +399,13 @@ class ClientGenerator:
                 is_required = param.get('required', False)
 
                 # Create type annotation - Optional for non-required parameters
+                param_type = self._get_parameter_type(param, enums)
                 if is_required:
-                    type_annotation = ast.Name(id='str', ctx=ast.Load())
+                    type_annotation = ast.Name(id=param_type, ctx=ast.Load())
                 else:
                     type_annotation = ast.Subscript(
                         value=ast.Name(id='Optional', ctx=ast.Load()),
-                        slice=ast.Name(id='str', ctx=ast.Load()),
+                        slice=ast.Name(id=param_type, ctx=ast.Load()),
                         ctx=ast.Load()
                     )
 
@@ -363,12 +431,13 @@ class ClientGenerator:
                 is_required = param.get('required', False)
 
                 # Create type annotation - Optional for non-required parameters
+                param_type = self._get_parameter_type(param, enums)
                 if is_required:
-                    type_annotation = ast.Name(id='str', ctx=ast.Load())
+                    type_annotation = ast.Name(id=param_type, ctx=ast.Load())
                 else:
                     type_annotation = ast.Subscript(
                         value=ast.Name(id='Optional', ctx=ast.Load()),
-                        slice=ast.Name(id='str', ctx=ast.Load()),
+                        slice=ast.Name(id=param_type, ctx=ast.Load()),
                         ctx=ast.Load()
                     )
 

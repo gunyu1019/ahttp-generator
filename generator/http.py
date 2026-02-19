@@ -37,6 +37,7 @@ class HTTPGenerator:
         status_code_mapping = extracted_data.get('status_code_mapping', {})
         error_responses = extracted_data.get('error_responses', {})
         service_name = extracted_data.get('service_name', 'Api')
+        enums = extracted_data.get('enums', {})
 
         # Create module body
         body = []
