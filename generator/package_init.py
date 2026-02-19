@@ -19,6 +19,9 @@ class PackageInitGenerator:
         """
         Generate AST module for __init__.py.
 
+        Uses the same naming as ClientGenerator: client class name is derived from
+        service_name (e.g. ApiService -> ApiClient, Pubg -> PubgClient via info.title).
+
         Args:
             extracted_data: Extracted OpenAPI data
             model_names: List of generated model names
@@ -27,31 +30,31 @@ class PackageInitGenerator:
             AST module for __init__.py
         """
         service_name = extracted_data.get('service_name', 'ApiService')
+        # Same naming rule as client.py: ApiService -> ApiClient, Pubg -> PubgClient
+        client_class_name = service_name.replace('Service', 'Client')
 
-        # Create module body
         body = []
 
-        # Import and export service class
-        service_import = self.ast_helper.create_relative_import('service', [service_name])
-        body.append(service_import)
+        # Export main client facade from .client (replaces legacy .service / ApiService)
+        client_import = self.ast_helper.create_relative_import('client', [client_class_name])
+        body.append(client_import)
 
-        # Import and export all models
+        # Domain models for type hints
         if model_names:
-            models_import = self.ast_helper.create_import_all('models')
-            body.append(models_import)
+            body.append(self.ast_helper.create_import_all('models'))
 
-        # Create __all__ list for explicit exports
-        all_exports = [service_name] + model_names
+        # Response models for type hints (only when models/response.py exists)
+        if extracted_data.get('response_models'):
+            body.append(self.ast_helper.create_import_all('models.response', level=1))
+
+        # __all__: primary export is the client class (PEP 8 blank line before __all__)
         all_list = ast.List(
-            elts=[ast.Constant(value=name) for name in all_exports],
+            elts=[ast.Constant(value=client_class_name)],
             ctx=ast.Load()
         )
-        all_assign = self.ast_helper.create_assign('__all__', all_list)
-        body.append(all_assign)
+        body.append(self.ast_helper.create_assign('__all__', all_list))
 
-        # Create module
         module = ast.Module(body=body, type_ignores=[])
         ast.fix_missing_locations(module)
-
         return module
 
