@@ -9,6 +9,7 @@ from typing import Dict, Any, List
 from core.ast_helper import ASTHelper
 from core.sanitizer import IdentifierSanitizer
 from core.pep8_formatter import PEP8Formatter
+from generator.docstring import DocstringGenerator
 
 
 class HTTPGenerator:
@@ -17,6 +18,7 @@ class HTTPGenerator:
     def __init__(self):
         self.ast_helper = ASTHelper()
         self.formatter = PEP8Formatter()
+        self.docstring_generator = DocstringGenerator()
 
     def generate(self, extracted_data: Dict[str, Any], model_names: List[str] = None) -> ast.Module:
         """
@@ -303,8 +305,17 @@ class HTTPGenerator:
         )
         decorators.append(request_decorator)
 
-        # Create method body (pass statement for decorator-implemented methods)
-        body = [ast.Pass()]
+        # Create method body with docstring as first element
+        body = []
+
+        # Generate docstring from operation information
+        docstring_text = self._generate_operation_docstring(operation, parameters, return_type, return_type_info)
+        if docstring_text:
+            docstring_node = ast.Expr(value=ast.Constant(value=docstring_text))
+            body.append(docstring_node)
+
+        # Add pass statement for decorator-implemented methods
+        body.append(ast.Pass())
 
         return self._create_async_function_def(
             name=func_name,  # Use parser-confirmed unique function name
@@ -892,6 +903,55 @@ class HTTPGenerator:
             pascal_case += 'Request'
 
         return pascal_case
+
+    def _generate_operation_docstring(self, operation: Dict[str, Any], parameters: List[Dict[str, Any]], return_type: str, return_type_info: Dict[str, Any]) -> str:
+        """Generate NumPy style docstring for HTTP operation method."""
+        # Extract operation information
+        summary = operation.get('summary', '').strip()
+        description = operation.get('description', '').strip()
+        response_info = operation.get('responses', {})
+        response_description = response_info.get('description', 'The response from the API operation.')
+
+        # Prepare parameters for docstring - only include path, query, and body parameters
+        docstring_parameters = []
+
+        for param in parameters:
+            param_in = param.get('in', 'query')
+            if param_in in ['path', 'query', 'header']:
+                # Create parameter info for docstring
+                param_name = param.get('name', 'unknown')
+                param_desc = param.get('description', '').strip()
+
+                # Sanitize parameter name for Python
+                from core.sanitizer import IdentifierSanitizer
+                sanitized_name = IdentifierSanitizer.to_snake_case(param_name)
+
+                docstring_param = {
+                    'name': sanitized_name,
+                    'schema': param.get('schema', param),  # Some specs put schema info directly
+                    'description': param_desc,
+                    'required': param.get('required', True)
+                }
+                docstring_parameters.append(docstring_param)
+
+        # Add body parameter if exists
+        request_body = operation.get('request_body')
+        if request_body:
+            docstring_parameters.append({
+                'name': 'body',
+                'schema': {'type': 'object'},
+                'description': 'Request body data.',
+                'required': request_body.get('required', False)
+            })
+
+        # Generate docstring using DocstringGenerator
+        return self.docstring_generator.generate_numpy_docstring(
+            summary=summary,
+            description=description,
+            parameters=docstring_parameters,
+            return_type=return_type,
+            return_description=response_description
+        )
 
     def _create_async_function_def(
         self,

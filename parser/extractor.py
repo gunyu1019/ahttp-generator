@@ -147,6 +147,7 @@ class OpenAPIExtractor:
             'method': method,
             'path': path,
             'summary': operation.get('summary', ''),
+            'description': operation.get('description', ''),  # Added description
             'parameters': self._extract_parameters(operation),
             'request_body': self._extract_request_body(operation),
             'responses': self._extract_responses_with_context(operation, suggested_model_name),
@@ -199,21 +200,25 @@ class OpenAPIExtractor:
                 # Analyze content types with model name hint
                 response_info = self._analyze_response_content_with_hint(content, model_name_hint)
                 response_info['status_code'] = status_code
+                response_info['description'] = response.get('description', 'Successful operation')  # Add description
                 return response_info
 
         # Fallback to first response
         if responses:
+            first_status = list(responses.keys())[0]
             first_response = list(responses.values())[0]
             content = first_response.get('content', {})
             response_info = self._analyze_response_content_with_hint(content, model_name_hint)
-            response_info['status_code'] = '200'
+            response_info['status_code'] = first_status
+            response_info['description'] = first_response.get('description', 'API response')  # Add description
             return response_info
 
         return {
             'status_code': '200',
             'schema': {'type': 'object'},
             'response_type': 'json',
-            'content_type': 'application/json'
+            'content_type': 'application/json',
+            'description': 'API response'  # Add default description
         }
 
     def _resolve_ref(self, ref_path: str, spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -246,7 +251,7 @@ class OpenAPIExtractor:
             return {}
 
     def _extract_parameters(self, operation: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract and resolve parameter information."""
+        """Extract and resolve parameter information including descriptions."""
         parameters = operation.get('parameters', [])
         resolved_parameters = []
 
@@ -255,6 +260,9 @@ class OpenAPIExtractor:
                 # Resolve reference
                 resolved_param = self._resolve_ref(param['$ref'], self.spec)
                 if resolved_param:
+                    # Ensure description is included
+                    if 'description' not in resolved_param:
+                        resolved_param['description'] = ''
                     resolved_parameters.append(resolved_param)
                 else:
                     # Fallback for failed resolution
@@ -263,12 +271,16 @@ class OpenAPIExtractor:
                         'name': 'unknown_param',
                         'in': 'query',
                         'schema': {'type': 'string'},
-                        'required': False
+                        'required': False,
+                        'description': ''
                     }
                     resolved_parameters.append(fallback_param)
             else:
-                # Direct parameter definition
-                resolved_parameters.append(param)
+                # Direct parameter definition - ensure description is included
+                param_copy = param.copy()
+                if 'description' not in param_copy:
+                    param_copy['description'] = ''
+                resolved_parameters.append(param_copy)
 
         return resolved_parameters
 

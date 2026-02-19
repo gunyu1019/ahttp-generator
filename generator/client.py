@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Set
 from core.ast_helper import ASTHelper
 from core.sanitizer import IdentifierSanitizer
 from core.pep8_formatter import PEP8Formatter
+from generator.docstring import DocstringGenerator
 
 
 class ClientGenerator:
@@ -17,6 +18,7 @@ class ClientGenerator:
     def __init__(self):
         self.ast_helper = ASTHelper()
         self.formatter = PEP8Formatter()
+        self.docstring_generator = DocstringGenerator()
 
     def generate(self, extracted_data: Dict[str, Any], model_names: List[str]) -> ast.Module:
         """
@@ -293,8 +295,17 @@ class ClientGenerator:
             )
         )
 
-        # Create method body
-        body = [ast.Return(value=delegation_call)]
+        # Create method body with docstring as first element
+        body = []
+
+        # Generate docstring from operation information - reuse parameters but filter for user-friendly names
+        docstring_text = self._generate_client_operation_docstring(operation, parameters, return_type_info)
+        if docstring_text:
+            docstring_node = ast.Expr(value=ast.Constant(value=docstring_text))
+            body.append(docstring_node)
+
+        # Add delegation call
+        body.append(ast.Return(value=delegation_call))
 
         return self._create_async_function_def(
             name=func_name,  # Use parser-confirmed unique function name
@@ -399,3 +410,68 @@ class ClientGenerator:
 
         # Fallback
         return ast.Name(id='dict', ctx=ast.Load())
+
+    def _generate_client_operation_docstring(self, operation: Dict[str, Any], parameters: List[Dict[str, Any]], return_type_info: Dict[str, Any]) -> str:
+        """Generate NumPy style docstring for client facade operation method."""
+        # Extract operation information
+        summary = operation.get('summary', '').strip()
+        description = operation.get('description', '').strip()
+        response_info = operation.get('responses', {})
+        response_description = response_info.get('description', 'The response from the API operation.')
+
+        # Prepare parameters for docstring - use friendly names for client interface
+        docstring_parameters = []
+
+        for param in parameters:
+            param_in = param.get('in', 'query')
+            if param_in in ['path', 'query', 'header']:
+                # Create parameter info for docstring
+                param_name = param.get('name', 'unknown')
+                param_desc = param.get('description', '').strip()
+
+                # For client layer, use more friendly names
+                from core.sanitizer import IdentifierSanitizer
+                if param_name == 'target_id':
+                    friendly_name = 'target_channel_id'
+                else:
+                    friendly_name = IdentifierSanitizer.to_snake_case(param_name)
+
+                docstring_param = {
+                    'name': friendly_name,
+                    'schema': param.get('schema', param),
+                    'description': param_desc,
+                    'required': param.get('required', True)
+                }
+                docstring_parameters.append(docstring_param)
+
+        # Add request body parameter if exists
+        request_body = operation.get('request_body')
+        if request_body:
+            docstring_parameters.append({
+                'name': 'request_body',
+                'schema': {'type': 'object'},
+                'description': 'Request body data as dictionary.',
+                'required': request_body.get('required', False)
+            })
+
+        # Get return type from annotation
+        return_type = 'dict'  # Default
+        if return_type_info and return_type_info.get('annotation'):
+            ann = return_type_info['annotation']
+            if hasattr(ann, 'id'):
+                return_type = ann.id
+            elif hasattr(ann, 'value') and hasattr(ann.value, 'id'):
+                # Handle subscript types like List[Model]
+                if hasattr(ann, 'slice') and hasattr(ann.slice, 'id'):
+                    return_type = f"{ann.value.id}[{ann.slice.id}]"
+                else:
+                    return_type = ann.value.id
+
+        # Generate docstring using DocstringGenerator
+        return self.docstring_generator.generate_numpy_docstring(
+            summary=summary,
+            description=description,
+            parameters=docstring_parameters,
+            return_type=return_type,
+            return_description=response_description
+        )
