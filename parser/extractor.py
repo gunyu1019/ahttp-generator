@@ -213,7 +213,10 @@ class OpenAPIExtractor:
         # Step 2: Determine response model name with priority logic
         suggested_model_name = self._determine_response_model_name(operation, func_name)
 
-        return {
+        # Extract accept content type for Header.default_header decorator
+        accept_content_type = self._extract_accept_content_type(operation)
+
+        result = {
             'operation_id': operation_id,
             'method': method,
             'path': path,
@@ -224,6 +227,12 @@ class OpenAPIExtractor:
             'responses': self._extract_responses_with_context(operation, suggested_model_name),
             'error_responses': self._extract_error_responses(operation)
         }
+
+        # Add accept_content_type if found
+        if accept_content_type:
+            result['accept_content_type'] = accept_content_type
+
+        return result
 
     def _determine_response_model_name(self, operation: Dict[str, Any], func_name: str) -> str:
         """
@@ -256,6 +265,30 @@ class OpenAPIExtractor:
             pascal_case += 'Response'
 
         return pascal_case
+
+    def _extract_accept_content_type(self, operation: Dict[str, Any]) -> Optional[str]:
+        """Extract Accept header value from successful responses (200-299 status codes)."""
+        responses = operation.get('responses', {})
+
+        # Check successful status codes in order of preference
+        for status_code in responses.keys():
+            try:
+                status_num = int(status_code)
+                # Check if it's a success status code (200-299)
+                if 200 <= status_num <= 299:
+                    response = responses[status_code]
+                    content = response.get('content', {})
+
+                    # Return the first content type found
+                    if content:
+                        content_types = list(content.keys())
+                        if content_types:
+                            return content_types[0]
+            except ValueError:
+                # Skip non-numeric status codes (like 'default')
+                continue
+
+        return None
 
     def _extract_responses_with_context(self, operation: Dict[str, Any], model_name_hint: str) -> Dict[str, Any]:
         """Extract response information with model name hint for context injection."""

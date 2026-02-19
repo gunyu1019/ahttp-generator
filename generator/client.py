@@ -118,6 +118,10 @@ class ClientGenerator:
         init_method = self._create_facade_init_method(http_class_name, base_url, extracted_data)
         class_body.append(init_method)
 
+        # Add close method for resource cleanup
+        close_method = self._create_client_close_method()
+        class_body.append(close_method)
+
         # Add API operation methods (facade methods)
         paths = extracted_data.get('paths', [])
 
@@ -202,6 +206,53 @@ class ClientGenerator:
             body=body,
             decorator_list=[],
             returns=None
+        )
+
+        return ast.fix_missing_locations(func_def)
+
+    def _create_client_close_method(self) -> ast.AsyncFunctionDef:
+        """Create async close method for Client class."""
+        # Create method body: await self.http.close()
+        body = [
+            ast.Expr(
+                value=ast.Await(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr='http',
+                                ctx=ast.Load()
+                            ),
+                            attr='close',
+                            ctx=ast.Load()
+                        ),
+                        args=[],
+                        keywords=[]
+                    )
+                )
+            )
+        ]
+
+        # Create self argument
+        args = [self.ast_helper.create_arg('self')]
+
+        # Create return annotation for None
+        returns = ast.Constant(value=None)
+
+        func_def = ast.AsyncFunctionDef(
+            name='close',
+            args=ast.arguments(
+                posonlyargs=[],
+                args=args,
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[]
+            ),
+            body=body,
+            decorator_list=[],
+            returns=returns
         )
 
         return ast.fix_missing_locations(func_def)

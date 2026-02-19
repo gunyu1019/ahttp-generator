@@ -93,7 +93,7 @@ class HTTPGenerator:
         imports.append(self.ast_helper.create_import('typing', typing_imports))
 
         # Import ahttp_client Session and decorators
-        ahttp_imports = ['Session', 'request', 'Body', 'Path', 'Query']
+        ahttp_imports = ['Session', 'request', 'Body', 'Path', 'Query', 'Header']
 
         # Add RequestCore import if there are injectable authentication schemes
         if injectable_schemes:
@@ -163,6 +163,10 @@ class HTTPGenerator:
         if status_code_mapping:
             after_request_method = self._create_after_request_method(status_code_mapping)
             class_body.append(after_request_method)
+
+        # Add close method for resource cleanup
+        close_method = self._create_close_method()
+        class_body.append(close_method)
 
         # Add API operation methods
         paths = extracted_data.get('paths', [])
@@ -290,6 +294,23 @@ class HTTPGenerator:
                 [ast.Name(id=model_name, ctx=ast.Load())]
             )
             decorators.append(pydantic_decorator)
+
+        # Add Accept header decorator if accept_content_type is specified
+        accept_content_type = operation.get('accept_content_type')
+        if accept_content_type:
+            accept_header_decorator = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id='Header', ctx=ast.Load()),
+                    attr='default_header',
+                    ctx=ast.Load()
+                ),
+                args=[
+                    ast.Constant(value='Accept'),
+                    ast.Constant(value=accept_content_type)
+                ],
+                keywords=[]
+            )
+            decorators.append(accept_header_decorator)
 
         # Add request decorator with updated path
         request_decorator = ast.Call(
@@ -988,3 +1009,38 @@ class HTTPGenerator:
 
         return ast.fix_missing_locations(func_def)
 
+    def _create_close_method(self) -> ast.AsyncFunctionDef:
+        """Create async close method for HTTP class."""
+        # Create method body: await super().close()
+        body = [
+            ast.Expr(
+                value=ast.Await(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Call(
+                                func=ast.Name(id='super', ctx=ast.Load()),
+                                args=[],
+                                keywords=[]
+                            ),
+                            attr='close',
+                            ctx=ast.Load()
+                        ),
+                        args=[],
+                        keywords=[]
+                    )
+                )
+            )
+        ]
+
+        # Create self argument
+        args = [self.ast_helper.create_arg('self')]
+
+        # Create return annotation for None
+        returns = ast.Constant(value=None)
+
+        return self._create_async_function_def(
+            name='close',
+            args=args,
+            body=body,
+            returns=returns
+        )
