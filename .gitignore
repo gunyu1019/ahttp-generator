@@ -185,6 +185,10 @@ pyrightconfig.json
 pyvenv.cfg
 pip-selfcheck.json
 
+### Integrated Development Editor ###
+.idea/
+.vscode/
+
 ### test generated file ###
 requests/
 test_*/
