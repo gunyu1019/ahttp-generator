@@ -230,13 +230,36 @@ class DocstringGenerator:
         # First line (summary)
         result_lines.append(lines[0].strip())
 
-        # Add remaining lines with consistent indentation
-        for line in lines[1:]:
-            if line.strip():  # Non-empty lines
-                # Remove any existing indentation and let Python handle it
-                result_lines.append(line.strip())
-            else:  # Empty lines
+        # Process remaining lines, preserving NumPy docstring structure
+        i = 1
+        while i < len(lines):
+            line = lines[i]
+            stripped_line = line.strip()
+            
+            if not stripped_line:  # Empty lines
                 result_lines.append("")
+                i += 1
+                continue
+                
+            # Check for numpy docstring section headers
+            if stripped_line in ["Parameters", "Returns", "Raises", "See Also", "Notes", "Examples"]:
+                result_lines.append(stripped_line)
+                i += 1
+                continue
+            elif stripped_line.startswith("---"):  # Section underline (like "----------")
+                result_lines.append(stripped_line)
+                i += 1
+                continue
+            
+            # Check if this line starts with 4 spaces (parameter/return description)
+            if line.startswith("    "):
+                # This is an indented description line - preserve it exactly
+                result_lines.append(line.rstrip())  # Keep indentation but remove trailing spaces
+            else:
+                # Regular line - just strip
+                result_lines.append(stripped_line)
+            
+            i += 1
 
         return '\n'.join(result_lines)
 

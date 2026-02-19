@@ -176,7 +176,7 @@ def apply_pep8_formatting(code: str) -> str:
 
 
 def fix_docstring_indentation(code: str) -> str:
-    """Fix docstring indentation to match the surrounding code block."""
+    """Fix docstring indentation to match the surrounding code block while preserving NumPy-style structure."""
     lines = code.split('\n')
     result_lines = []
 
@@ -197,6 +197,23 @@ def fix_docstring_indentation(code: str) -> str:
             result_lines.append(line)
             i += 1
 
+            # Check if this looks like a NumPy-style docstring
+            is_numpy_style = False
+            numpy_sections = ["Parameters", "Returns", "Raises", "See Also", "Notes", "Examples"]
+            
+            # Look ahead for NumPy section markers
+            for look_ahead in range(i, min(i + 10, len(lines))):
+                if look_ahead >= len(lines):
+                    break
+                look_line = lines[look_ahead].strip()
+                if look_line in numpy_sections:
+                    is_numpy_style = True
+                    break
+
+            # For NumPy style docstrings, we need to track if we're after a parameter declaration
+            in_parameters_section = False
+            previous_line_was_param_declaration = False
+
             # Process the docstring content
             while i < len(lines):
                 current_line = lines[i]
@@ -211,11 +228,39 @@ def fix_docstring_indentation(code: str) -> str:
                 # For content lines, apply proper indentation
                 stripped_content = current_line.strip()
                 if stripped_content:
-                    # Apply consistent indentation for all content
-                    result_lines.append(content_indent + stripped_content)
+                    if is_numpy_style:
+                        # Check if we're in a parameters section
+                        if stripped_content == "Parameters":
+                            in_parameters_section = True
+                            result_lines.append(content_indent + stripped_content)
+                            previous_line_was_param_declaration = False
+                        elif stripped_content in ["Returns", "Raises", "See Also", "Notes", "Examples"]:
+                            in_parameters_section = False
+                            result_lines.append(content_indent + stripped_content)
+                            previous_line_was_param_declaration = False
+                        elif stripped_content.startswith("---"):
+                            # Section underline
+                            result_lines.append(content_indent + stripped_content)
+                            previous_line_was_param_declaration = False
+                        elif in_parameters_section and " : " in stripped_content:
+                            # This is a parameter declaration (name : type)
+                            result_lines.append(content_indent + stripped_content)
+                            previous_line_was_param_declaration = True
+                        elif in_parameters_section and previous_line_was_param_declaration:
+                            # This is a parameter description - add 4 extra spaces
+                            result_lines.append(content_indent + "    " + stripped_content)
+                            previous_line_was_param_declaration = False
+                        else:
+                            # Regular content line
+                            result_lines.append(content_indent + stripped_content)
+                            previous_line_was_param_declaration = False
+                    else:
+                        # For regular docstrings, apply consistent indentation for all content
+                        result_lines.append(content_indent + stripped_content)
                 else:
                     # Keep empty lines as empty
                     result_lines.append('')
+                    previous_line_was_param_declaration = False
                 i += 1
         else:
             # Not a multiline docstring, keep as is
