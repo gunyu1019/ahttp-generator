@@ -139,12 +139,23 @@ class ClientGenerator:
     def _create_facade_init_method(self, http_class_name: str, base_url: str, extracted_data: Dict[str, Any] = None) -> ast.FunctionDef:
         """Create __init__ method for facade class with composition and security schemes support."""
         security_schemes = extracted_data.get('security_schemes', []) if extracted_data else []
+        servers_info = extracted_data.get('servers', {}) if extracted_data else {}
+        domain_vars = servers_info.get('domain_vars', {})
 
-        # Create arguments: self, then security scheme arguments, then base_url with default value
+        # Create arguments: self, then domain variables, then security scheme arguments, then base_url with default value
         args = [self.ast_helper.create_arg('self')]
 
-        # Add security scheme arguments first
+        # Add domain variable arguments
         defaults = []
+        for var_name, var_def in domain_vars.items():
+            default_value = var_def.get('default', '')
+            args.append(self.ast_helper.create_arg(
+                var_name,
+                ast.Name(id='str', ctx=ast.Load())
+            ))
+            defaults.append(ast.Constant(value=default_value))
+
+        # Add security scheme arguments
         for scheme in security_schemes:
             arg_name = scheme['arg_name']
             args.append(self.ast_helper.create_arg(
@@ -158,13 +169,28 @@ class ClientGenerator:
             defaults.append(ast.Constant(value=None))
 
         # Add base_url argument with default value
-        args.append(self.ast_helper.create_arg('base_url', ast.Name(id='str', ctx=ast.Load())))
-        defaults.append(self.ast_helper.create_string_constant(base_url))
+        args.append(self.ast_helper.create_arg('base_url', 
+            ast.Subscript(
+                value=ast.Name(id='Optional', ctx=ast.Load()),
+                slice=ast.Name(id='str', ctx=ast.Load()),
+                ctx=ast.Load()
+            )
+        ))
+        defaults.append(ast.Constant(value=None))
 
-        # Create method body: self.http = HTTPClass(base_url, **auth_args)
+        # Create method body: self.http = HTTPClass(domain_vars..., base_url, **auth_args)
         http_call_keywords = [
             ast.keyword(arg='base_url', value=ast.Name(id='base_url', ctx=ast.Load()))
         ]
+
+        # Add domain variable arguments to HTTP class call
+        for var_name in domain_vars.keys():
+            http_call_keywords.append(
+                ast.keyword(
+                    arg=var_name,
+                    value=ast.Name(id=var_name, ctx=ast.Load())
+                )
+            )
 
         # Add security scheme arguments to HTTP class call
         for scheme in security_schemes:

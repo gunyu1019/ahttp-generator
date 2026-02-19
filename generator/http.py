@@ -173,7 +173,7 @@ class HTTPGenerator:
         schemas = extracted_data.get('schemas', {})
 
         for operation in paths:
-            method_def = self._create_http_operation_method(operation, schemas, model_names)
+            method_def = self._create_http_operation_method(operation, schemas, model_names, extracted_data)
             class_body.append(method_def)
 
         # Create class
@@ -183,7 +183,7 @@ class HTTPGenerator:
             body=class_body
         )
 
-    def _create_http_operation_method(self, operation: Dict[str, Any], schemas: Dict[str, Any], model_names: List[str] = None) -> ast.FunctionDef:
+    def _create_http_operation_method(self, operation: Dict[str, Any], schemas: Dict[str, Any], model_names: List[str] = None, extracted_data: Dict[str, Any] = None) -> ast.FunctionDef:
         """Create HTTP operation method with full ahttp_client decorators and annotations."""
         operation_id = operation.get('operation_id', 'operation')
         method = operation.get('method', 'GET')
@@ -191,6 +191,10 @@ class HTTPGenerator:
         parameters = operation.get('parameters', [])
         request_body = operation.get('request_body')
         response = operation.get('responses', {})
+
+        # Get path variables from server configuration
+        servers_info = extracted_data.get('servers', {}) if extracted_data else {}
+        path_vars = servers_info.get('path_vars', {})
 
         # Use parser-determined function name (deduplication already applied)
         func_name = operation.get('func_name')
@@ -205,6 +209,28 @@ class HTTPGenerator:
         param_name_mappings = {}
         used_names = set()  # Track used parameter names to avoid collisions
 
+        # First, add path variables from server configuration (these go first)
+        for var_name, var_def in path_vars.items():
+            default_value = var_def.get('default', '')
+            sanitized_name = IdentifierSanitizer.to_snake_case(var_name)
+            
+            # Handle name collisions
+            if sanitized_name in used_names:
+                counter = 1
+                original_sanitized = sanitized_name
+                while sanitized_name in used_names:
+                    sanitized_name = f"{original_sanitized}_{counter}"
+                    counter += 1
+            used_names.add(sanitized_name)
+            
+            # Store mapping for URL template replacement
+            if var_name != sanitized_name:
+                param_name_mappings[var_name] = sanitized_name
+            
+            # Create argument with default value using Annotated[str, Path]
+            args.append(self.ast_helper.create_annotated_arg(sanitized_name, 'str', 'Path'))
+            defaults.append(ast.Constant(value=default_value))
+
         # Add path parameters with Annotated types
         param_index = 0
         for param in parameters:
@@ -215,7 +241,11 @@ class HTTPGenerator:
 
                 # Handle name collisions
                 if sanitized_name in used_names:
-                    sanitized_name = f"{sanitized_name}_{param_index}"
+                    counter = 1
+                    original_sanitized = sanitized_name
+                    while sanitized_name in used_names:
+                        sanitized_name = f"{original_sanitized}_{counter}"
+                        counter += 1
                 used_names.add(sanitized_name)
 
                 # Store mapping for URL template replacement
@@ -248,12 +278,59 @@ class HTTPGenerator:
                     sanitized_name = f"{sanitized_name}_{param_index}"
                 used_names.add(sanitized_name)
 
-                # Always use regular annotation (no custom_name)
-                annotated_arg = self.ast_helper.create_annotated_arg(
-                    sanitized_name,
-                    param_type,
-                    annotation_source
-                )
+                # Use custom_name for Query parameters when names differ
+                if original_name != sanitized_name:
+                    annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
+                        sanitized_name,
+                        param_type,
+                        annotation_source,
+                        original_name
+                    )
+                else:
+                    annotated_arg = self.ast_helper.create_annotated_arg(
+                        sanitized_name,
+                        param_type,
+                        annotation_source
+                    )
+                args.append(annotated_arg)
+
+                # Add default value for optional parameters
+                if not is_required:
+                    defaults.append(ast.Constant(value=None))
+
+                param_index += 1
+
+        # Add header parameters with Annotated types
+        for param in parameters:
+            if param['in'] == 'header':
+                param_type, annotation_source = self._map_parameter_type(param)
+                original_name = param.get('name', f'arg_{param_index}')
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
+
+                # Handle optional parameters
+                is_required = param.get('required', False)
+                if not is_required:
+                    param_type = f'Optional[{param_type}]'
+
+                # Handle name collisions
+                if sanitized_name in used_names:
+                    sanitized_name = f"{sanitized_name}_{param_index}"
+                used_names.add(sanitized_name)
+
+                # Use custom_name for Header parameters when names differ
+                if original_name != sanitized_name:
+                    annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
+                        sanitized_name,
+                        param_type,
+                        annotation_source,
+                        original_name
+                    )
+                else:
+                    annotated_arg = self.ast_helper.create_annotated_arg(
+                        sanitized_name,
+                        param_type,
+                        annotation_source
+                    )
                 args.append(annotated_arg)
 
                 # Add default value for optional parameters
@@ -295,7 +372,20 @@ class HTTPGenerator:
             )
             decorators.append(pydantic_decorator)
 
-        # Add Accept header decorator if accept_content_type is specified
+        # Add request decorator with updated path (must come before Header.default_header)
+        request_decorator = ast.Call(
+            func=ast.Name(id='request', ctx=ast.Load()),
+            args=[
+                self.ast_helper.create_string_constant(method),
+                self.ast_helper.create_string_constant(updated_path)  # Use updated path with sanitized parameter names
+            ],
+            keywords=[
+                ast.keyword(arg='directly_response', value=ast.Constant(value=True))
+            ]
+        )
+        decorators.append(request_decorator)
+
+        # Add Accept header decorator if accept_content_type is specified (must come AFTER request decorator)
         accept_content_type = operation.get('accept_content_type')
         if accept_content_type:
             accept_header_decorator = ast.Call(
@@ -311,19 +401,6 @@ class HTTPGenerator:
                 keywords=[]
             )
             decorators.append(accept_header_decorator)
-
-        # Add request decorator with updated path
-        request_decorator = ast.Call(
-            func=ast.Name(id='request', ctx=ast.Load()),
-            args=[
-                self.ast_helper.create_string_constant(method),
-                self.ast_helper.create_string_constant(updated_path)  # Use updated path with sanitized parameter names
-            ],
-            keywords=[
-                ast.keyword(arg='directly_response', value=ast.Constant(value=True))
-            ]
-        )
-        decorators.append(request_decorator)
 
         # Create method body with docstring as first element
         body = []
@@ -376,17 +453,35 @@ class HTTPGenerator:
         )
 
     def _create_init_method(self, extracted_data: Dict[str, Any] = None) -> ast.FunctionDef:
-        """Create __init__ method for HTTPClient with optional security schemes support."""
+        """Create __init__ method for HTTPClient with domain variables and security schemes support."""
         security_schemes = extracted_data.get('security_schemes', []) if extracted_data else []
+        servers_info = extracted_data.get('servers', {}) if extracted_data else {}
+        domain_vars = servers_info.get('domain_vars', {})
+        domain_url_template = servers_info.get('domain_url', 'https://api.example.com')
 
-        # Create arguments - base_url is always first, then security scheme arguments
+        # Create arguments - base_url is first, then domain variables, then security schemes
         args = [
             self.ast_helper.create_arg('self'),
-            self.ast_helper.create_arg('base_url', ast.Name(id='str', ctx=ast.Load()))
+            self.ast_helper.create_arg('base_url', 
+                ast.Subscript(
+                    value=ast.Name(id='Optional', ctx=ast.Load()),
+                    slice=ast.Name(id='str', ctx=ast.Load()),
+                    ctx=ast.Load()
+                )
+            )
         ]
 
+        # Add domain variable arguments
+        defaults = [ast.Constant(value=None)]  # Default for base_url
+        for var_name, var_def in domain_vars.items():
+            default_value = var_def.get('default', '')
+            args.append(self.ast_helper.create_arg(
+                var_name,
+                ast.Name(id='str', ctx=ast.Load())
+            ))
+            defaults.append(ast.Constant(value=default_value))
+
         # Add security scheme arguments
-        defaults = []
         for scheme in security_schemes:
             arg_name = scheme['arg_name']
             args.append(self.ast_helper.create_arg(
@@ -400,24 +495,66 @@ class HTTPGenerator:
             defaults.append(ast.Constant(value=None))
 
         # Create method body
-        body = [
-            # super().__init__(base_url)
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Call(
-                            func=ast.Name(id='super', ctx=ast.Load()),
-                            args=[],
-                            keywords=[]
-                        ),
-                        attr='__init__',
-                        ctx=ast.Load()
-                    ),
-                    args=[ast.Name(id='base_url', ctx=ast.Load())],
-                    keywords=[]
+        body = []
+        
+        # Handle base_url with domain variable formatting
+        if domain_vars:
+            # if base_url is None:
+            #     base_url = domain_url_template.format(**domain_vars)
+            format_kwargs = []
+            for var_name in domain_vars.keys():
+                format_kwargs.append(
+                    ast.keyword(
+                        arg=var_name,
+                        value=ast.Name(id=var_name, ctx=ast.Load())
+                    )
                 )
+            
+            if_condition = ast.Compare(
+                left=ast.Name(id='base_url', ctx=ast.Load()),
+                ops=[ast.Is()],
+                comparators=[ast.Constant(value=None)]
             )
-        ]
+            
+            format_call = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Constant(value=domain_url_template),
+                    attr='format',
+                    ctx=ast.Load()
+                ),
+                args=[],
+                keywords=format_kwargs
+            )
+            
+            base_url_assignment = ast.Assign(
+                targets=[ast.Name(id='base_url', ctx=ast.Store())],
+                value=format_call
+            )
+            
+            if_stmt = ast.If(
+                test=if_condition,
+                body=[base_url_assignment],
+                orelse=[]
+            )
+            body.append(if_stmt)
+        
+        # super().__init__(base_url)
+        super_call = ast.Expr(
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Call(
+                        func=ast.Name(id='super', ctx=ast.Load()),
+                        args=[],
+                        keywords=[]
+                    ),
+                    attr='__init__',
+                    ctx=ast.Load()
+                ),
+                args=[ast.Name(id='base_url', ctx=ast.Load())],
+                keywords=[]
+            )
+        )
+        body.append(super_call)
 
         # Store authentication parameters as instance variables (PRIVATE for security)
         for scheme in security_schemes:
@@ -445,7 +582,7 @@ class HTTPGenerator:
                 kwonlyargs=[],
                 kw_defaults=[],
                 kwarg=None,
-                defaults=defaults  # Default values for optional security arguments
+                defaults=defaults  # Default values for optional arguments
             ),
             body=body,
             decorator_list=[],

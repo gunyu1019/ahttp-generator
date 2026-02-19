@@ -112,48 +112,64 @@ class OpenAPIExtractor:
 
     def _extract_servers(self, spec: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Extract server URLs with proper base URL and base path separation.
+        Extract server URLs with proper domain/path variable separation.
 
         Returns:
-            Dictionary containing 'base_url' and 'base_path'
+            Dictionary containing:
+            - domain_url: Pure domain template (e.g., 'https://{environment}.api.pubg.com')
+            - base_path: Path template (e.g., '/shards/{platform}')
+            - domain_vars: Variables that belong to domain URL
+            - path_vars: Variables that belong to base path
         """
         servers = spec.get('servers', [])
         if not servers:
             return {
-                'base_url': 'https://api.example.com',
-                'base_path': ''
+                'domain_url': 'https://api.example.com',
+                'base_path': '',
+                'domain_vars': {},
+                'path_vars': {}
             }
 
-        server_url = servers[0].get('url', 'https://api.example.com')
-
-        # Handle server variables by using default values
+        server_url_template = servers[0].get('url', 'https://api.example.com')
         variables = servers[0].get('variables', {})
-        for var_name, var_def in variables.items():
-            default_value = var_def.get('default', '')
-            server_url = server_url.replace(f'{{{var_name}}}', default_value)
 
-        # Parse URL to separate base URL from base path
+        # Parse URL template to separate domain from path
         from urllib.parse import urlparse
-        parsed = urlparse(server_url)
-
-        # Base URL is scheme + netloc (no path)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-        # Base path is the path component (if any)
-        base_path = parsed.path if parsed.path else ''
-
-        # Ensure base_url never ends with '/'
-        base_url = base_url.rstrip('/')
-
-        # Ensure base_path is properly formatted
-        if base_path and not base_path.startswith('/'):
-            base_path = '/' + base_path
-        if base_path.endswith('/'):
-            base_path = base_path.rstrip('/')
-
+        
+        # Use original template to determine structure
+        parsed = urlparse(server_url_template)
+        
+        # Split original template into domain and path parts
+        domain_template = f"{parsed.scheme}://{parsed.netloc}"
+        path_template = parsed.path if parsed.path else ''
+        
+        # Categorize variables by checking which part contains each variable
+        domain_vars = {}
+        path_vars = {}
+        
+        for var_name, var_def in variables.items():
+            var_placeholder = f'{{{var_name}}}'
+            
+            if var_placeholder in domain_template:
+                domain_vars[var_name] = var_def
+            elif var_placeholder in path_template:
+                path_vars[var_name] = var_def
+            else:
+                # Fallback: put in domain_vars if uncertain
+                domain_vars[var_name] = var_def
+                domain_vars[var_name] = var_def
+        
+        # Clean up templates
+        if path_template and not path_template.startswith('/'):
+            path_template = '/' + path_template
+        if path_template.endswith('/'):
+            path_template = path_template.rstrip('/')
+        
         return {
-            'base_url': base_url,
-            'base_path': base_path
+            'domain_url': domain_template,
+            'base_path': path_template,
+            'domain_vars': domain_vars,
+            'path_vars': path_vars
         }
 
     def _extract_paths(self, spec: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -166,12 +182,13 @@ class OpenAPIExtractor:
         base_path = servers_info.get('base_path', '')
 
         for path, path_item in paths.items():
-            # Combine base_path with endpoint path
-            full_path = self._combine_paths(base_path, path)
+            # Create both merged_path (for routing) and original_path (for naming)
+            merged_path = self._combine_paths(base_path, path)
+            original_path = path  # Store original endpoint path for naming
 
             for method, operation in path_item.items():
                 if method.lower() in ['get', 'post', 'put', 'delete', 'patch', 'head', 'options']:
-                    op_data = self._extract_operation(full_path, method.upper(), operation)
+                    op_data = self._extract_operation(merged_path, original_path, method.upper(), operation)
                     operations.append(op_data)
 
         return operations
@@ -202,11 +219,11 @@ class OpenAPIExtractor:
         # Combine paths
         return base_path + endpoint_path
 
-    def _extract_operation(self, path: str, method: str, operation: Dict[str, Any]) -> Dict[str, Any]:
+    def _extract_operation(self, merged_path: str, original_path: str, method: str, operation: Dict[str, Any]) -> Dict[str, Any]:
         """Extract single operation data with context injection for response model naming."""
-        operation_id = operation.get('operationId', self._generate_operation_id(method, path))
+        operation_id = operation.get('operationId', self._generate_operation_id(method, original_path))  # Use original_path for naming
 
-        # Step 1: Determine function name (using sanitizer for consistency)
+        # Step 1: Determine function name (using sanitizer for consistency) - use original_path for naming
         from core.sanitizer import IdentifierSanitizer
         func_name = IdentifierSanitizer.to_snake_case(operation_id)
 
@@ -218,8 +235,10 @@ class OpenAPIExtractor:
 
         result = {
             'operation_id': operation_id,
+            'func_name': func_name,  # Add func_name for generator consistency
             'method': method,
-            'path': path,
+            'path': merged_path,  # Use merged_path for routing (decorators)
+            'original_path': original_path,  # Store original_path for reference
             'summary': operation.get('summary', ''),
             'description': operation.get('description', ''),  # Added description
             'parameters': self._extract_parameters(operation),
