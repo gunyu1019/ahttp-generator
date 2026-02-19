@@ -37,8 +37,11 @@ class ModelsGenerator:
         paths = extracted_data.get('paths', [])
         enums = extracted_data.get('enums', {})
 
-        # Track generated model names
-        model_names = []
+        # Track generated model names by category
+        domain_model_names = []
+        request_model_names = []
+        error_model_names = []
+        response_model_names = []
         model_modules = {}
         
         # Sort schemas to handle dependencies
@@ -47,7 +50,7 @@ class ModelsGenerator:
         # Generate individual model files from schemas
         for schema_name, schema_def in sorted_schemas:
             sanitized_name = self.type_mapper.sanitize_schema_name(schema_name)
-            model_names.append(sanitized_name)
+            domain_model_names.append(sanitized_name)
             
             # Create individual module for this model
             module = self._create_individual_model_module(sanitized_name, schema_def, schemas, enums)
@@ -59,24 +62,37 @@ class ModelsGenerator:
         # Generate request body models from operations
         request_models = self._generate_request_models(paths, schemas)
         for request_name, request_module in request_models.items():
-            model_names.append(request_name)
+            request_model_names.append(request_name)
             filename = self._to_snake_case(request_name) + '.py'
             model_modules[filename] = request_module
 
         # Generate error models from error schemas
         if error_schemas:
-            error_module, error_model_names = self._generate_error_models(error_schemas, enums)
+            error_module, generated_error_model_names = self._generate_error_models(error_schemas, enums)
             model_modules['error.py'] = error_module
-            model_names.extend(error_model_names)
+            error_model_names.extend(generated_error_model_names)
 
         # Generate response.py file if there are response models
         if response_models:
-            response_module, response_model_names = self._generate_response_module(response_models, model_names, enums)
+            domain_reference_names = domain_model_names + request_model_names
+            response_module, generated_response_model_names = self._generate_response_module(response_models, domain_reference_names, enums)
             model_modules['response.py'] = response_module
-            model_names.extend(response_model_names)
+            response_model_names.extend(generated_response_model_names)
+
+        # Aggregate all exported model names (deduplicated)
+        model_names = sorted(set(
+            domain_model_names +
+            request_model_names +
+            error_model_names +
+            response_model_names
+        ))
 
         # Generate models/__init__.py 
-        init_module = self._create_models_init_module(model_names, bool(response_models), bool(error_schemas))
+        init_module = self._create_models_init_module(
+            model_names,
+            response_model_names=response_model_names,
+            error_model_names=error_model_names
+        )
         model_modules['__init__.py'] = init_module
         
         return model_modules, model_names
@@ -187,45 +203,43 @@ class ModelsGenerator:
     def _create_models_init_module(
         self,
         model_names: List[str],
-        has_response_models: bool = False,
-        has_error_models: bool = False
+        response_model_names: List[str] = None,
+        error_model_names: List[str] = None
     ) -> ast.Module:
         """Create __init__.py module that exports all models."""
-        body = []
-        
-        # Separate domain models, response models, and error response models
-        domain_models = []
-        response_models = []
-        error_models = []
+        if response_model_names is None:
+            response_model_names = []
+        if error_model_names is None:
+            error_model_names = []
 
-        for model_name in model_names:
-            if model_name.endswith('ErrorResponse'):
-                error_models.append(model_name)
-            elif model_name.endswith('Response'):
-                response_models.append(model_name)
-            else:
-                domain_models.append(model_name)
+        body = []
+
+        # Build deterministic model groups from explicit generation results
+        response_set = set(response_model_names)
+        error_set = set(error_model_names)
+        all_models = sorted(set(model_names))
+        domain_models = sorted([name for name in all_models if name not in response_set and name not in error_set])
 
         # Create import statements for domain models (individual files)
-        for model_name in sorted(domain_models):
+        for model_name in domain_models:
             filename = self._to_snake_case(model_name)
             import_stmt = self.ast_helper.create_relative_import(filename, [model_name])
             body.append(import_stmt)
         
         # Import response models from response.py if exists
-        if response_models and has_response_models:
-            import_stmt = self.ast_helper.create_relative_import('response', sorted(response_models))
+        if response_set:
+            import_stmt = self.ast_helper.create_relative_import('response', sorted(response_set))
             body.append(import_stmt)
 
         # Import error models from error.py if exists
-        if error_models and has_error_models:
-            import_stmt = self.ast_helper.create_relative_import('error', sorted(error_models))
+        if error_set:
+            import_stmt = self.ast_helper.create_relative_import('error', sorted(error_set))
             body.append(import_stmt)
 
         # Create __all__ list
-        if model_names:
+        if all_models:
             all_list = ast.List(
-                elts=[ast.Constant(value=name) for name in sorted(model_names)],
+                elts=[ast.Constant(value=name) for name in all_models],
                 ctx=ast.Load()
             )
             all_assign = self.ast_helper.create_assign('__all__', all_list)
