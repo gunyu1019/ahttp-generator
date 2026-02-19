@@ -186,6 +186,9 @@ class ClientGenerator:
         close_method = self._create_client_close_method()
         class_body.append(close_method)
 
+        # Add async context manager methods for safe resource handling
+        class_body.extend(self._create_context_manager_methods())
+
         # Add API operation methods (facade methods)
         paths = extracted_data.get('paths', [])
 
@@ -346,6 +349,66 @@ class ClientGenerator:
         )
 
         return ast.fix_missing_locations(func_def)
+
+    def _create_context_manager_methods(self) -> List[ast.AsyncFunctionDef]:
+        """Create async context manager magic methods for Client class."""
+        aenter_method = ast.AsyncFunctionDef(
+            name='__aenter__',
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[self.ast_helper.create_arg('self')],
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[]
+            ),
+            body=[
+                ast.Return(value=ast.Name(id='self', ctx=ast.Load()))
+            ],
+            decorator_list=[],
+            returns=None
+        )
+
+        aexit_method = ast.AsyncFunctionDef(
+            name='__aexit__',
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[
+                    self.ast_helper.create_arg('self'),
+                    self.ast_helper.create_arg('exc_type'),
+                    self.ast_helper.create_arg('exc_val'),
+                    self.ast_helper.create_arg('exc_tb')
+                ],
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[]
+            ),
+            body=[
+                ast.Expr(
+                    value=ast.Await(
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr='close',
+                                ctx=ast.Load()
+                            ),
+                            args=[],
+                            keywords=[]
+                        )
+                    )
+                )
+            ],
+            decorator_list=[],
+            returns=None
+        )
+
+        return [
+            ast.fix_missing_locations(aenter_method),
+            ast.fix_missing_locations(aexit_method)
+        ]
 
     def _create_facade_operation_method(self, operation: Dict[str, Any], enums: Dict[str, Any] = None) -> ast.FunctionDef:
         """Create facade operation method that delegates to HTTP implementation with correct return types."""
