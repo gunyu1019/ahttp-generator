@@ -35,9 +35,7 @@ class HTTPGenerator:
             model_names = []
         # Get status code mapping for exception handling
         status_code_mapping = extracted_data.get('status_code_mapping', {})
-        error_responses = extracted_data.get('error_responses', {})
         service_name = extracted_data.get('service_name', 'Api')
-        enums = extracted_data.get('enums', {})
 
         # Create module body
         body = []
@@ -133,10 +131,10 @@ class HTTPGenerator:
             if error_models:
                 imports.append(self.ast_helper.create_relative_import('models.error', error_models))
 
-        # Import exceptions if any exist
+        # Import aiohttp response type and endpoint-specific exception classes
         if status_code_mapping:
-            # Get unique exception names
-            exception_names = list(set(status_code_mapping.values()))
+            imports.append(self.ast_helper.create_import('aiohttp', ['ClientResponse']))
+            exception_names = sorted(set(status_code_mapping.values()))
             imports.append(self.ast_helper.create_relative_import('exceptions', exception_names))
 
         return imports
@@ -167,11 +165,6 @@ class HTTPGenerator:
             before_request_method = self._create_before_request_method(injectable_schemes)
             class_body.append(before_request_method)
 
-        # Add after_request hook method if there are error responses
-        if status_code_mapping:
-            after_request_method = self._create_after_request_method(status_code_mapping)
-            class_body.append(after_request_method)
-
         # Add close method for resource cleanup
         close_method = self._create_close_method()
         class_body.append(close_method)
@@ -183,6 +176,11 @@ class HTTPGenerator:
         for operation in paths:
             method_def = self._create_http_operation_method(operation, schemas, model_names, extracted_data)
             class_body.append(method_def)
+
+            operation_error_mapping = self._create_operation_error_mapping(operation, status_code_mapping)
+            if operation_error_mapping:
+                hook_def = self._create_operation_error_hook(method_def.name, operation_error_mapping)
+                class_body.append(hook_def)
 
         # Create class
         return self.ast_helper.create_class_def(
@@ -448,11 +446,6 @@ class HTTPGenerator:
         init_method = self._create_init_method()
         class_body.append(init_method)
 
-        # Add after_request hook method if there are error responses
-        if status_code_mapping:
-            after_request_method = self._create_after_request_method(status_code_mapping)
-            class_body.append(after_request_method)
-
         # Create class
         return self.ast_helper.create_class_def(
             name='HTTPClient',
@@ -599,37 +592,148 @@ class HTTPGenerator:
 
         return ast.fix_missing_locations(func_def)
 
-    def _create_after_request_method(self, status_code_mapping: Dict[int, str]) -> ast.AsyncFunctionDef:
-        """Create after_request hook method for automatic exception handling."""
-        # Create arguments: self, response, context
+    def _create_operation_error_mapping(
+        self,
+        operation: Dict[str, Any],
+        status_code_mapping: Dict[int, str]
+    ) -> Dict[int, str]:
+        """Create endpoint-specific status code to exception mapping."""
+        operation_error_responses = operation.get('error_responses', {})
+        operation_mapping = {}
+
+        for status_code in operation_error_responses.keys():
+            if not status_code.isdigit():
+                continue
+
+            status_code_int = int(status_code)
+            exception_name = status_code_mapping.get(status_code_int, f'HttpError{status_code}')
+            operation_mapping[status_code_int] = exception_name
+
+        return operation_mapping
+
+    def _create_operation_error_hook(
+        self,
+        method_name: str,
+        operation_error_mapping: Dict[int, str]
+    ) -> ast.AsyncFunctionDef:
+        """Create endpoint-specific after_hook method for error handling."""
         args = [
             self.ast_helper.create_arg('self'),
-            self.ast_helper.create_arg('response'),
-            self.ast_helper.create_arg('context')
+            self.ast_helper.create_arg('response', ast.Name(id='ClientResponse', ctx=ast.Load()))
         ]
 
-        # Create method body
-        body = []
+        sorted_codes = sorted(operation_error_mapping.keys())
+        if_chain_root = None
+        current_if = None
 
-        # Sort status codes for consistent ordering
-        sorted_status_codes = sorted(status_code_mapping.keys())
+        for status_code in sorted_codes:
+            exception_name = operation_error_mapping[status_code]
 
-        # Create if/elif chain for status code checking
-        if sorted_status_codes:
-            first_status = sorted_status_codes[0]
-            remaining_status_codes = sorted_status_codes[1:]
+            condition = ast.Compare(
+                left=ast.Attribute(
+                    value=ast.Name(id='response', ctx=ast.Load()),
+                    attr='status',
+                    ctx=ast.Load()
+                ),
+                ops=[ast.Eq()],
+                comparators=[ast.Constant(value=status_code)]
+            )
 
-            # Create the first if statement
-            if_stmt = self._create_status_check_if(first_status, status_code_mapping[first_status], remaining_status_codes, status_code_mapping)
-            body.append(if_stmt)
+            try_body = [
+                ast.Assign(
+                    targets=[ast.Name(id='error_data', ctx=ast.Store())],
+                    value=ast.Await(
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Name(id='response', ctx=ast.Load()),
+                                attr='json',
+                                ctx=ast.Load()
+                            ),
+                            args=[],
+                            keywords=[]
+                        )
+                    )
+                ),
+                ast.Assign(
+                    targets=[ast.Name(id='error_model', ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Attribute(
+                                value=ast.Attribute(
+                                    value=ast.Name(id=exception_name, ctx=ast.Load()),
+                                    attr='__init__',
+                                    ctx=ast.Load()
+                                ),
+                                attr='__annotations__',
+                                ctx=ast.Load()
+                            ),
+                            attr='get',
+                            ctx=ast.Load()
+                        ),
+                        args=[ast.Constant(value='response_model')],
+                        keywords=[]
+                    )
+                ),
+                ast.Assign(
+                    targets=[ast.Name(id='parsed_model', ctx=ast.Store())],
+                    value=ast.IfExp(
+                        test=ast.Name(id='error_model', ctx=ast.Load()),
+                        body=ast.Call(
+                            func=ast.Name(id='error_model', ctx=ast.Load()),
+                            args=[],
+                            keywords=[ast.keyword(arg=None, value=ast.Name(id='error_data', ctx=ast.Load()))]
+                        ),
+                        orelse=ast.Constant(value=None)
+                    )
+                )
+            ]
 
-        # Add return response statement
-        return_stmt = ast.Return(value=ast.Name(id='response', ctx=ast.Load()))
-        body.append(return_stmt)
+            except_body = [
+                ast.Assign(
+                    targets=[ast.Name(id='parsed_model', ctx=ast.Store())],
+                    value=ast.Constant(value=None)
+                )
+            ]
 
-        # Create async function definition
+            parse_try_except = ast.Try(
+                body=try_body,
+                handlers=[
+                    ast.ExceptHandler(
+                        type=ast.Name(id='Exception', ctx=ast.Load()),
+                        name=None,
+                        body=except_body
+                    )
+                ],
+                orelse=[],
+                finalbody=[]
+            )
+
+            raise_stmt = ast.Raise(
+                exc=ast.Call(
+                    func=ast.Name(id=exception_name, ctx=ast.Load()),
+                    args=[],
+                    keywords=[ast.keyword(arg='response_model', value=ast.Name(id='parsed_model', ctx=ast.Load()))]
+                ),
+                cause=None
+            )
+
+            if_node = ast.If(
+                test=condition,
+                body=[parse_try_except, raise_stmt],
+                orelse=[]
+            )
+
+            if if_chain_root is None:
+                if_chain_root = if_node
+                current_if = if_node
+            else:
+                current_if.orelse = [if_node]
+                current_if = if_node
+
+        body = [if_chain_root] if if_chain_root else [ast.Pass()]
+
         func_def = ast.AsyncFunctionDef(
-            name='after_request',
+            name=f'_{method_name}_error_hook',
             args=ast.arguments(
                 posonlyargs=[],
                 args=args,
@@ -640,8 +744,14 @@ class HTTPGenerator:
                 defaults=[]
             ),
             body=body,
-            decorator_list=[],
-            returns=None
+            decorator_list=[
+                ast.Attribute(
+                    value=ast.Name(id=method_name, ctx=ast.Load()),
+                    attr='after_hook',
+                    ctx=ast.Load()
+                )
+            ],
+            returns=ast.Constant(value=None)
         )
 
         return ast.fix_missing_locations(func_def)

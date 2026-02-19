@@ -14,6 +14,8 @@ from core.pep8_formatter import PEP8Formatter
 class ModelsGenerator:
     """Generates individual Pydantic models from OpenAPI schemas."""
 
+    DEFAULT_TYPING_IMPORTS = ['Optional', 'List', 'Dict', 'Any', 'Union']
+
     def __init__(self):
         self.ast_helper = ASTHelper()
         self.type_mapper = TypeMapper()
@@ -158,7 +160,7 @@ class ModelsGenerator:
             imports.append(self.ast_helper.create_import('enum', ['Enum']))
         
         # Typing imports
-        typing_imports = ['Optional', 'Union']  # Always include Optional and Union
+        typing_imports = []
         
         # Get typing imports based on types used
         type_imports = self.type_mapper.get_imports_for_types(types_used)
@@ -166,9 +168,7 @@ class ModelsGenerator:
             if module_name == 'typing' and import_names:
                 typing_imports.extend(import_names)
         
-        # Remove duplicates
-        typing_imports = list(set(typing_imports))
-        imports.append(self.ast_helper.create_import('typing', typing_imports))
+        imports.append(self.ast_helper.create_import('typing', self._build_typing_imports(typing_imports)))
         
         # Add relative imports for other models if needed
         referenced_models = self._get_referenced_models(schema, schemas)
@@ -555,7 +555,7 @@ class ModelsGenerator:
         imports = []
 
         imports.append(self.ast_helper.create_import('pydantic', ['BaseModel']))
-        imports.append(self.ast_helper.create_import('typing', ['List', 'Optional', 'Dict', 'Any', 'Union']))
+        imports.append(self.ast_helper.create_import('typing', self._build_typing_imports()))
         imports.append(self.ast_helper.create_import('datetime', ['date', 'datetime']))
 
         return imports
@@ -599,15 +599,8 @@ class ModelsGenerator:
         # Import pydantic BaseModel
         imports.append(self.ast_helper.create_import('pydantic', ['BaseModel']))
 
-        # Import typing components
-        typing_imports = []
-        # Always include these common types
-        typing_imports.extend(['List', 'Optional', 'Dict', 'Any'])
-
-        # Add datetime if needed
-        typing_imports.append('Union')
-
-        imports.append(self.ast_helper.create_import('typing', typing_imports))
+        # Import typing components (always includes Union, deduplicated)
+        imports.append(self.ast_helper.create_import('typing', self._build_typing_imports()))
 
         # Import datetime if needed
         imports.append(self.ast_helper.create_import('datetime', ['date', 'datetime']))
@@ -621,6 +614,15 @@ class ModelsGenerator:
                 imports.append(self.ast_helper.create_relative_import(filename, [model_name], level=1))
 
         return imports
+
+    def _build_typing_imports(self, additional_imports: List[str] = None) -> List[str]:
+        """Build typing imports with required defaults and deduplication."""
+        if additional_imports is None:
+            additional_imports = []
+
+        ordered_imports = self.DEFAULT_TYPING_IMPORTS + additional_imports
+        deduped_imports = list(dict.fromkeys(ordered_imports))
+        return deduped_imports
 
     def _analyze_model_dependencies(self, schema: Dict[str, Any], domain_models: List[str]) -> List[str]:
         """Analyze model schema to find dependencies on domain models."""
