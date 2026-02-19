@@ -386,7 +386,8 @@ class ModelsGenerator:
             for model_name in sorted(required_domain_models):
                 # Convert to snake_case for filename
                 filename = self._to_snake_case(model_name)
-                imports.append(self.ast_helper.create_relative_import(f'.{filename}', [model_name]))
+                # Use current directory relative import
+                imports.append(self.ast_helper.create_relative_import(filename, [model_name], level=1))
 
         return imports
 
