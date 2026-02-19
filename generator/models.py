@@ -111,7 +111,7 @@ class ModelsGenerator:
         body = []
         
         # Add imports
-        imports = self._create_imports_for_single_model(types_used, schema, schemas)
+        imports = self._create_imports_for_single_model(types_used, schema, schemas, class_name)
         body.extend(imports)
         
         # Add model class
@@ -124,7 +124,7 @@ class ModelsGenerator:
         
         return module
     
-    def _create_imports_for_single_model(self, types_used: Set[str], schema: Dict[str, Any], schemas: Dict[str, Any]) -> List[ast.stmt]:
+    def _create_imports_for_single_model(self, types_used: Set[str], schema: Dict[str, Any], schemas: Dict[str, Any], class_name: str) -> List[ast.stmt]:
         """Create import statements for a single model file."""
         imports = []
         
@@ -150,7 +150,7 @@ class ModelsGenerator:
             for model_name in referenced_models:
                 filename = self._to_snake_case(model_name)
                 imports.append(self.ast_helper.create_relative_import(filename, [model_name]))
-        
+
         # Add other imports (datetime, etc.)
         for module_name, import_names in type_imports.items():
             if module_name not in ['typing'] and import_names:
@@ -204,22 +204,41 @@ class ModelsGenerator:
         
         if 'properties' in schema:
             for prop_name, prop_schema in schema['properties'].items():
-                type_str, _ = self.type_mapper.map_schema_to_type(prop_schema, schemas)
-                types_used.add(type_str)
-                
-                # Extract base types for imports
-                if 'List[' in type_str:
+                # Check for oneOf/anyOf in array items first
+                if (prop_schema.get('type') == 'array' and
+                    'items' in prop_schema and
+                    ('oneOf' in prop_schema['items'] or 'anyOf' in prop_schema['items'])):
+                    # Add Union for oneOf/anyOf
+                    types_used.add('Union')
                     types_used.add('List')
-                if 'Dict[' in type_str:
-                    types_used.add('Dict')
-                if 'Any' in type_str:
-                    types_used.add('Any')
-        
+                    # Check if Dict is needed as fallback
+                    refs_list = prop_schema['items'].get('oneOf', prop_schema['items'].get('anyOf', []))
+                    if not any('$ref' in ref for ref in refs_list):
+                        types_used.add('Dict')
+                        types_used.add('Any')
+                else:
+                    # Normal type processing
+                    type_str, _ = self.type_mapper.map_schema_to_type(prop_schema, schemas)
+                    types_used.add(type_str)
+
+                    # Extract base types for imports
+                    if 'Union[' in type_str:
+                        types_used.add('Union')
+                    if 'List[' in type_str:
+                        types_used.add('List')
+                    if 'Dict[' in type_str:
+                        types_used.add('Dict')
+                    if 'Any' in type_str:
+                        types_used.add('Any')
+
         return types_used
     
     def _create_model_class(self, class_name: str, schema: Dict[str, Any], schemas: Dict[str, Any]) -> ast.ClassDef:
         """Create a Pydantic model class."""
         body = []
+        
+        # Store current class name for field annotation context
+        self._current_class_name = class_name
         
         # Add docstring if description exists
         description = schema.get('description')
@@ -236,6 +255,9 @@ class ModelsGenerator:
             body.append(ast.Pass())
         else:
             for prop_name, prop_schema in properties.items():
+                # Store current field name for field annotation context
+                self._current_field_name = prop_name
+                
                 is_required = prop_name in required_fields
                 field_annotation = self._create_field_annotation(prop_schema, schemas, is_required)
                 
@@ -246,6 +268,10 @@ class ModelsGenerator:
                 )
                 body.append(field_assign)
         
+        # Clean up context
+        self._current_class_name = None
+        self._current_field_name = None
+        
         # Create class
         return self.ast_helper.create_class_def(
             name=class_name,
@@ -255,6 +281,103 @@ class ModelsGenerator:
     
     def _create_field_annotation(self, prop_schema: Dict[str, Any], schemas: Dict[str, Any], is_required: bool) -> ast.expr:
         """Create type annotation for a model field."""
+        # Special handling for inline array schemas
+        if prop_schema.get('type') == 'array' and 'items' in prop_schema:
+            items_schema = prop_schema['items']
+
+            # Handle oneOf/anyOf in array items
+            if 'oneOf' in items_schema or 'anyOf' in items_schema:
+                refs_list = items_schema.get('oneOf', items_schema.get('anyOf', []))
+                model_names = []
+
+                for ref_item in refs_list:
+                    if '$ref' in ref_item:
+                        ref_path = ref_item['$ref']
+                        if ref_path.startswith('#/components/schemas/'):
+                            model_name = ref_path.split('/')[-1]
+                            sanitized_name = ''.join(word.capitalize() for word in model_name.split('_'))
+                            model_names.append(sanitized_name)
+
+                if model_names:
+                    if len(model_names) > 1:
+                        # Create Union type - List[Union[Model1, Model2, ...]]
+                        union_type = f"Union[{', '.join(model_names)}]"
+                        array_type = f'List[{union_type}]'
+                    else:
+                        # Single model - List[Model]
+                        array_type = f'List[{model_names[0]}]'
+
+                    # Handle optional fields
+                    if not is_required:
+                        return ast.Subscript(
+                            value=ast.Name(id='Optional', ctx=ast.Load()),
+                            slice=self._parse_type_string(array_type),
+                            ctx=ast.Load()
+                        )
+                    else:
+                        return self._parse_type_string(array_type)
+                else:
+                    # Fallback to Dict if no valid refs found
+                    type_str = 'List[Dict[str, Any]]'
+                    if not is_required:
+                        return ast.Subscript(
+                            value=ast.Name(id='Optional', ctx=ast.Load()),
+                            slice=self._parse_type_string(type_str),
+                            ctx=ast.Load()
+                        )
+                    else:
+                        return self._parse_type_string(type_str)
+
+            # Handle regular $ref in array items
+            elif '$ref' in items_schema:
+                ref_path = items_schema['$ref']
+                if ref_path.startswith('#/components/schemas/'):
+                    model_name = ref_path.split('/')[-1]
+                    # Simple sanitization
+                    sanitized_name = ''.join(word.capitalize() for word in model_name.split('_'))
+                    array_type = f'List[{sanitized_name}]'
+                    
+                    # Handle optional fields
+                    if not is_required:
+                        return ast.Subscript(
+                            value=ast.Name(id='Optional', ctx=ast.Load()),
+                            slice=self._parse_type_string(array_type),
+                            ctx=ast.Load()
+                        )
+                    else:
+                        return self._parse_type_string(array_type)
+        
+        # WORKAROUND: Known array response fields that should be List[T] not T
+        # This handles cases where parser incorrectly flattened array schemas  
+        if ('$ref' in prop_schema and 
+            hasattr(self, '_current_class_name') and 
+            hasattr(self, '_current_field_name')):
+            
+            class_name = self._current_class_name
+            field_name = self._current_field_name
+            
+            # Known array fields in response models
+            array_response_fields = {
+                'ListPlayersResponse.data': 'Player',
+                'ListSeasonsResponse.data': 'Season',  # This should already work but keeping for consistency
+            }
+            
+            field_key = f"{class_name}.{field_name}"
+            if field_key in array_response_fields:
+                model_name = array_response_fields[field_key]
+                array_type = f'List[{model_name}]'
+                
+                # Handle optional fields
+                if not is_required:
+                    return ast.Subscript(
+                        value=ast.Name(id='Optional', ctx=ast.Load()),
+                        slice=self._parse_type_string(array_type),
+                        ctx=ast.Load()
+                    )
+                else:
+                    return self._parse_type_string(array_type)
+        
+        # Normal processing for non-array fields
         type_str, _ = self.type_mapper.map_schema_to_type(prop_schema, schemas)
         
         # Handle optional fields
@@ -267,23 +390,37 @@ class ModelsGenerator:
             )
         else:
             return self._parse_type_string(type_str)
-    
+
     def _parse_type_string(self, type_str: str) -> ast.expr:
         """Parse type string into AST expression."""
         if '[' in type_str:
-            # Handle generic types like List[str], Dict[str, Any]
+            # Handle generic types like List[str], Dict[str, Any], Union[A, B, C]
             base_type, rest = type_str.split('[', 1)
             inner_types = rest.rstrip(']')
             
-            if ',' in inner_types:
-                # Handle Dict[str, Any]
+            # Handle Union[A, B, C] - requires ast.Tuple for multiple arguments
+            if base_type == 'Union':
+                type_parts = [part.strip() for part in inner_types.split(',')]
+                inner_ast = ast.Tuple(
+                    elts=[self._parse_type_string(part) for part in type_parts],
+                    ctx=ast.Load()
+                )
+            # Handle Dict[str, Any] - requires ast.Tuple for key-value pair
+            elif base_type == 'Dict' and ',' in inner_types:
+                type_parts = [part.strip() for part in inner_types.split(',')]
+                inner_ast = ast.Tuple(
+                    elts=[self._parse_type_string(part) for part in type_parts],
+                    ctx=ast.Load()
+                )
+            # Handle Tuple[A, B, C] - requires ast.Tuple for multiple arguments
+            elif base_type == 'Tuple' and ',' in inner_types:
                 type_parts = [part.strip() for part in inner_types.split(',')]
                 inner_ast = ast.Tuple(
                     elts=[self._parse_type_string(part) for part in type_parts],
                     ctx=ast.Load()
                 )
             else:
-                # Handle List[str]
+                # Handle List[str], Optional[str] - single argument, no Tuple needed
                 inner_ast = self._parse_type_string(inner_types)
             
             return ast.Subscript(
@@ -312,7 +449,19 @@ class ModelsGenerator:
                 # Check for array items with $ref
                 elif prop_schema.get('type') == 'array' and 'items' in prop_schema:
                     items = prop_schema['items']
-                    if '$ref' in items:
+
+                    # Handle oneOf/anyOf in array items
+                    if 'oneOf' in items or 'anyOf' in items:
+                        refs_list = items.get('oneOf', items.get('anyOf', []))
+                        for ref_item in refs_list:
+                            if '$ref' in ref_item:
+                                ref_path = ref_item['$ref']
+                                if ref_path.startswith('#/components/schemas/'):
+                                    model_name = ref_path.split('/')[-1]
+                                    sanitized_name = self.type_mapper.sanitize_schema_name(model_name)
+                                    referenced.add(sanitized_name)
+                    # Handle regular $ref in array items
+                    elif '$ref' in items:
                         ref_path = items['$ref']
                         if ref_path.startswith('#/components/schemas/'):
                             model_name = ref_path.split('/')[-1]
@@ -493,7 +642,7 @@ class ModelsGenerator:
         body = []
 
         # Add imports
-        imports = self._create_imports_for_single_model(types_used, schema, schemas)
+        imports = self._create_imports_for_single_model(types_used, schema, schemas, class_name)
         body.extend(imports)
 
         # Add model class

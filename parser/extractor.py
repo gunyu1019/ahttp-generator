@@ -577,7 +577,40 @@ class OpenAPIExtractor:
         # Check for array of models
         elif schema.get('type') == 'array':
             items = schema.get('items', {})
-            if '$ref' in items:
+
+            # Handle oneOf/anyOf inside array items
+            if 'oneOf' in items or 'anyOf' in items:
+                # Extract model names from oneOf/anyOf references
+                refs_list = items.get('oneOf', items.get('anyOf', []))
+                model_names = []
+
+                for ref_item in refs_list:
+                    if '$ref' in ref_item:
+                        ref_path = ref_item['$ref']
+                        if ref_path.startswith('#/components/schemas/'):
+                            model_name = ref_path.split('/')[-1]
+                            sanitized_name = ''.join(word.capitalize() for word in model_name.split('_'))
+                            model_names.append(sanitized_name)
+
+                if model_names:
+                    # Create Union type for multiple models
+                    if len(model_names) > 1:
+                        union_type = f"Union[{', '.join(model_names)}]"
+                        return {
+                            'python_type': f'List[{union_type}]',
+                            'inline_model': None,
+                            'model_name': None,
+                            'union_models': model_names
+                        }
+                    else:
+                        # Single model in oneOf/anyOf
+                        return {
+                            'python_type': f'List[{model_names[0]}]',
+                            'inline_model': None,
+                            'model_name': model_names[0]
+                        }
+
+            elif '$ref' in items:
                 ref_path = items['$ref']
                 if ref_path.startswith('#/components/schemas/'):
                     model_name = ref_path.split('/')[-1]

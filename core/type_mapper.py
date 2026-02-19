@@ -58,6 +58,7 @@ class TypeMapper:
         schema_type = schema.get('type', 'object')
         schema_format = schema.get('format')
 
+
         # Check format first
         if schema_format and schema_format in cls.FORMAT_MAPPING:
             return cls.FORMAT_MAPPING[schema_format], False
@@ -65,8 +66,31 @@ class TypeMapper:
         # Handle array
         if schema_type == 'array':
             items_schema = schema.get('items', {'type': 'object'})
-            item_type, _ = cls.map_schema_to_type(items_schema, schemas)
-            return f'List[{item_type}]', False
+
+            # Handle oneOf/anyOf in array items
+            if 'oneOf' in items_schema or 'anyOf' in items_schema:
+                refs_list = items_schema.get('oneOf', items_schema.get('anyOf', []))
+                model_names = []
+
+                for ref_item in refs_list:
+                    if '$ref' in ref_item:
+                        ref_path = ref_item['$ref']
+                        if ref_path.startswith('#/components/schemas/'):
+                            model_name = ref_path.split('/')[-1]
+                            model_names.append(model_name)
+
+                if model_names:
+                    if len(model_names) > 1:
+                        union_type = f"Union[{', '.join(model_names)}]"
+                        return f'List[{union_type}]', False
+                    else:
+                        return f'List[{model_names[0]}]', False
+                else:
+                    # Fallback if no valid refs found
+                    return 'List[Dict[str, Any]]', False
+            else:
+                item_type, _ = cls.map_schema_to_type(items_schema, schemas)
+                return f'List[{item_type}]', False
 
         # Handle object with properties (inline object)
         if schema_type == 'object' and 'properties' in schema:
@@ -129,6 +153,8 @@ class TypeMapper:
             typing_imports.append('List')
         if any('Dict[' in str(t) for t in types_used) or 'Dict' in types_used:
             typing_imports.append('Dict')
+        if any('Union[' in str(t) for t in types_used) or 'Union' in types_used:
+            typing_imports.append('Union')
         if 'Any' in types_used:
             typing_imports.append('Any')
         if 'Annotated' in types_used:

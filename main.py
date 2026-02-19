@@ -276,34 +276,34 @@ def main():
     for filename, module_ast in model_modules.items():
         model_file = models_dir / filename
         write_ast_to_file(str(model_file), module_ast)
-        print(f"  ✓ {model_file}")
+        print(f"  + {model_file}")
 
     # Create exceptions directory and write exception files
     if exception_modules:
         exceptions_dir = output_path / 'exceptions'
         exceptions_dir.mkdir(exist_ok=True)
 
-        for filename, module_ast in exception_modules.items():
-            exception_file = exceptions_dir / filename
-            write_ast_to_file(str(exception_file), module_ast)
-            print(f"  ✓ {exception_file}")
+    for exception_file, exception_module in exception_modules.items():
+        exception_path = exceptions_dir / exception_file
+        write_ast_to_file(str(exception_path), exception_module)
+        print(f"  + {exception_path}")
 
-    # Write http.py
+    # Write HTTP handler
     http_file = output_path / 'http.py'
     write_ast_to_file(str(http_file), http_ast)
-    print(f"  ✓ {http_file}")
+    print(f"  + {http_file}")
 
-    # Write client.py
+    # Write client module
     client_file = output_path / 'client.py'
     write_ast_to_file(str(client_file), client_ast)
-    print(f"  ✓ {client_file}")
+    print(f"  + {client_file}")
 
     # Write __init__.py
     init_file = output_path / '__init__.py'
     write_ast_to_file(str(init_file), init_ast)
-    print(f"  ✓ {init_file}")
+    print(f"  + {init_file}")
 
-    print(f"\n✨ Package '{args.output_dir}' generated successfully!")
+    print(f"** Package '{args.output_dir}' generated successfully!")
     print(f"   You can now use: from {args.output_dir} import *")
 
 
