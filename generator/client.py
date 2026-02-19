@@ -193,7 +193,7 @@ class ClientGenerator:
         paths = extracted_data.get('paths', [])
 
         for operation in paths:
-            method_def = self._create_facade_operation_method(operation, enums)
+            method_def = self._create_facade_operation_method(operation, extracted_data, enums)
             class_body.append(method_def)
 
         # Create class (no inheritance - standalone class)
@@ -410,7 +410,7 @@ class ClientGenerator:
             ast.fix_missing_locations(aexit_method)
         ]
 
-    def _create_facade_operation_method(self, operation: Dict[str, Any], enums: Dict[str, Any] = None) -> ast.FunctionDef:
+    def _create_facade_operation_method(self, operation: Dict[str, Any], extracted_data: Dict[str, Any] = None, enums: Dict[str, Any] = None) -> ast.FunctionDef:
         """Create facade operation method that delegates to HTTP implementation with correct return types."""
         if enums is None:
             enums = {}
@@ -419,6 +419,10 @@ class ClientGenerator:
         parameters = operation.get('parameters', [])
         request_body = operation.get('request_body')
         response_info = operation.get('responses', {})
+
+        # Get path variables from server configuration
+        servers_info = extracted_data.get('servers', {}) if extracted_data else {}
+        path_vars = servers_info.get('path_vars', {})
 
         # Use parser-determined function name (deduplication already applied)
         func_name = operation.get('func_name')
@@ -430,6 +434,28 @@ class ClientGenerator:
         args = [self.ast_helper.create_arg('self')]
         defaults = []  # Track default values for optional parameters
         call_keywords = []  # For delegation call
+        used_names = set()  # Track used names to avoid collisions
+
+        # Add path variables from server configuration first (sync with HTTP layer)
+        for var_name, var_def in path_vars.items():
+            default_value = var_def.get('default', '')
+            sanitized_name = IdentifierSanitizer.to_snake_case(var_name)
+
+            # Handle name collisions to mirror HTTP generator behavior
+            if sanitized_name in used_names:
+                counter = 1
+                original_sanitized = sanitized_name
+                while sanitized_name in used_names:
+                    sanitized_name = f"{original_sanitized}_{counter}"
+                    counter += 1
+            used_names.add(sanitized_name)
+
+            args.append(self.ast_helper.create_arg(sanitized_name, ast.Name(id='str', ctx=ast.Load())))
+            defaults.append(ast.Constant(value=default_value))
+            call_keywords.append(ast.keyword(
+                arg=sanitized_name,
+                value=ast.Name(id=sanitized_name, ctx=ast.Load())
+            ))
 
         # Add path parameters with friendly names
         param_index = 0
@@ -437,6 +463,15 @@ class ClientGenerator:
             if param['in'] == 'path':
                 original_name = param.get('name', f'arg_{param_index}')
                 sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
+
+                # Handle name collisions to mirror HTTP generator behavior
+                if sanitized_name in used_names:
+                    counter = 1
+                    original_sanitized = sanitized_name
+                    while sanitized_name in used_names:
+                        sanitized_name = f"{original_sanitized}_{counter}"
+                        counter += 1
+                used_names.add(sanitized_name)
 
                 # Use more friendly names for common cases
                 if original_name == 'target_id':
@@ -460,6 +495,11 @@ class ClientGenerator:
                 original_name = param.get('name', f'arg_{param_index}')
                 sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
                 is_required = param.get('required', False)
+
+                # Handle name collisions to mirror HTTP generator behavior
+                if sanitized_name in used_names:
+                    sanitized_name = f"{sanitized_name}_{param_index}"
+                used_names.add(sanitized_name)
 
                 # Create type annotation - Optional for non-required parameters
                 param_type = self._get_parameter_type(param, enums)
@@ -492,6 +532,11 @@ class ClientGenerator:
                 original_name = param.get('name', f'arg_{param_index}')
                 sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
                 is_required = param.get('required', False)
+
+                # Handle name collisions to mirror HTTP generator behavior
+                if sanitized_name in used_names:
+                    sanitized_name = f"{sanitized_name}_{param_index}"
+                used_names.add(sanitized_name)
 
                 # Create type annotation - Optional for non-required parameters
                 param_type = self._get_parameter_type(param, enums)
