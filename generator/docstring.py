@@ -182,7 +182,7 @@ class DocstringGenerator:
 
     def create_docstring_ast_node(self, docstring_text: str) -> 'ast.Expr':
         """
-        Create AST Expr node for docstring.
+        Create AST Expr node for docstring with proper formatting.
 
         Args:
             docstring_text: The docstring text
@@ -191,5 +191,52 @@ class DocstringGenerator:
             AST Expr node containing the docstring
         """
         import ast
-        return ast.Expr(value=ast.Constant(value=docstring_text))
+
+        # Clean and normalize the docstring
+        normalized_text = self.normalize_docstring(docstring_text)
+        return ast.Expr(value=ast.Constant(value=normalized_text))
+
+    def normalize_docstring(self, docstring_text: str) -> str:
+        """
+        Normalize docstring text with proper indentation and formatting.
+
+        Args:
+            docstring_text: Raw docstring text
+
+        Returns:
+            Normalized docstring text that will format correctly when unparsed
+        """
+        if not docstring_text:
+            return ""
+
+        lines = docstring_text.strip().split('\n')
+
+        # Remove empty lines at the beginning and end
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+        if not lines:
+            return ""
+
+        # For single-line docstrings, return as-is
+        if len(lines) == 1:
+            return lines[0].strip()
+
+        # For multi-line docstrings, ensure proper formatting
+        result_lines = []
+
+        # First line (summary)
+        result_lines.append(lines[0].strip())
+
+        # Add remaining lines with consistent indentation
+        for line in lines[1:]:
+            if line.strip():  # Non-empty lines
+                # Remove any existing indentation and let Python handle it
+                result_lines.append(line.strip())
+            else:  # Empty lines
+                result_lines.append("")
+
+        return '\n'.join(result_lines)
 

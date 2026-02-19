@@ -301,7 +301,9 @@ class ClientGenerator:
         # Generate docstring from operation information - reuse parameters but filter for user-friendly names
         docstring_text = self._generate_client_operation_docstring(operation, parameters, return_type_info)
         if docstring_text:
-            docstring_node = ast.Expr(value=ast.Constant(value=docstring_text))
+            # Use normalized docstring for proper formatting
+            normalized_docstring = self.docstring_generator.normalize_docstring(docstring_text)
+            docstring_node = ast.Expr(value=ast.Constant(value=normalized_docstring))
             body.append(docstring_node)
 
         # Add delegation call
