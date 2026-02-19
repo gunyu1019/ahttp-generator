@@ -4,10 +4,11 @@ Generates client facade class from OpenAPI specification (Facade Layer).
 """
 
 import ast
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set
 
 from core.ast_helper import ASTHelper
 from core.sanitizer import IdentifierSanitizer
+from core.pep8_formatter import PEP8Formatter
 
 
 class ClientGenerator:
@@ -15,10 +16,11 @@ class ClientGenerator:
 
     def __init__(self):
         self.ast_helper = ASTHelper()
+        self.formatter = PEP8Formatter()
 
     def generate(self, extracted_data: Dict[str, Any], model_names: List[str]) -> ast.Module:
         """
-        Generate AST module for client.py (Facade Layer).
+        Generate AST module for client.py (Facade Layer) with PEP 8 compliance.
         """
         service_name = extracted_data.get('service_name', 'ApiService')
         servers = extracted_data.get('servers', ['https://api.example.com'])
@@ -27,13 +29,29 @@ class ClientGenerator:
         # Create module body
         body = []
 
-        # Add import statements
-        import_statements = self._create_imports(service_name, model_names, extracted_data)
-        body.extend(import_statements)
+        # Add PEP 8 compliant file header
+        header = self.formatter.create_file_header()
+        body.extend(header)
 
-        # Create client facade class
-        client_class = self._create_client_class(service_name, base_url, extracted_data)
-        body.append(client_class)
+        # Create client facade class (temporarily, to analyze typing needs)
+        temp_client_class = self._create_client_class(service_name, base_url, extracted_data)
+
+        # Create temporary module to analyze typing requirements
+        temp_module = ast.Module(body=[temp_client_class], type_ignores=[])
+        required_typing = self.formatter.detect_typing_imports(temp_module)
+
+        # Add import statements with detected typing imports
+        import_statements = self._create_imports(service_name, model_names, extracted_data, required_typing)
+        sorted_imports = self.formatter.sort_imports(import_statements)
+        body.extend(sorted_imports)
+
+        # Add __all__ declaration
+        client_class_name = service_name.replace('Service', 'Client')
+        all_declaration = self.formatter.create_all_declaration([client_class_name])
+        body.append(all_declaration)
+
+        # Add the actual client class
+        body.append(temp_client_class)
 
         # Create module
         module = ast.Module(body=body, type_ignores=[])
@@ -41,7 +59,7 @@ class ClientGenerator:
 
         return module
 
-    def _create_imports(self, service_name: str, model_names: List[str], extracted_data: Dict[str, Any]) -> List[ast.stmt]:
+    def _create_imports(self, service_name: str, model_names: List[str], extracted_data: Dict[str, Any], required_typing: Set[str] = None) -> List[ast.stmt]:
         """Create import statements for facade layer with response model separation."""
         imports = []
 
@@ -72,6 +90,10 @@ class ClientGenerator:
         # Import response models that are used
         if used_response_models:
             imports.append(self.ast_helper.create_relative_import('models.response', sorted(used_response_models)))
+
+        # Add any required typing imports (e.g., List, Dict)
+        if required_typing:
+            imports.extend(self.ast_helper.create_imports_from_typing(required_typing))
 
         return imports
 

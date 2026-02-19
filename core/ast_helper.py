@@ -235,6 +235,14 @@ class ASTHelper:
         )
 
     @staticmethod
+    def create_imports_from_typing(typing_names: set) -> List[ast.ImportFrom]:
+        """Create import statements for typing module items."""
+        if not typing_names:
+            return []
+
+        return [ASTHelper.create_import('typing', sorted(typing_names))]
+
+    @staticmethod
     def create_annotated_arg_with_custom_name(
         arg_name: str,
         type_annotation: str,
@@ -268,6 +276,4 @@ class ASTHelper:
 
         arg = ast.arg(arg=arg_name, annotation=annotation)
         return ast.fix_missing_locations(arg)
-
-
 

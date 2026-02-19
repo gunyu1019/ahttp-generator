@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Tuple, Set
 
 from core.ast_helper import ASTHelper
 from core.type_mapper import TypeMapper
+from core.pep8_formatter import PEP8Formatter
 
 
 class ModelsGenerator:
@@ -16,6 +17,7 @@ class ModelsGenerator:
     def __init__(self):
         self.ast_helper = ASTHelper()
         self.type_mapper = TypeMapper()
+        self.formatter = PEP8Formatter()
 
     def generate(self, extracted_data: Dict[str, Any]) -> Tuple[Dict[str, ast.Module], List[str]]:
         """

@@ -8,6 +8,7 @@ from typing import Dict, Any, List
 
 from core.ast_helper import ASTHelper
 from core.sanitizer import IdentifierSanitizer
+from core.pep8_formatter import PEP8Formatter
 
 
 class HTTPGenerator:
@@ -15,10 +16,11 @@ class HTTPGenerator:
 
     def __init__(self):
         self.ast_helper = ASTHelper()
+        self.formatter = PEP8Formatter()
 
     def generate(self, extracted_data: Dict[str, Any], model_names: List[str] = None) -> ast.Module:
         """
-        Generate AST module for http.py (Implementation Layer).
+        Generate AST module for http.py (Implementation Layer) with PEP 8 compliance.
 
         Args:
             extracted_data: Extracted OpenAPI data
@@ -37,13 +39,29 @@ class HTTPGenerator:
         # Create module body
         body = []
 
-        # Add import statements
-        import_statements = self._create_imports(status_code_mapping, model_names, extracted_data)
-        body.extend(import_statements)
+        # Add PEP 8 compliant file header
+        header = self.formatter.create_file_header()
+        body.extend(header)
+
+        # Create HTTP implementation class (temporarily, to analyze typing needs)
+        temp_http_class = self._create_http_impl_class(service_name, status_code_mapping, extracted_data, model_names)
+
+        # Create temporary module to analyze typing requirements
+        temp_module = ast.Module(body=[temp_http_class], type_ignores=[])
+        required_typing = self.formatter.detect_typing_imports(temp_module)
+
+        # Add import statements with detected typing imports
+        import_statements = self._create_imports(status_code_mapping, model_names, extracted_data, required_typing)
+        sorted_imports = self.formatter.sort_imports(import_statements)
+        body.extend(sorted_imports)
+
+        # Add __all__ declaration
+        http_class_name = service_name.replace('Service', 'HTTP')
+        all_declaration = self.formatter.create_all_declaration([http_class_name])
+        body.append(all_declaration)
 
         # Create HTTP implementation class
-        http_impl_class = self._create_http_impl_class(service_name, status_code_mapping, extracted_data, model_names)
-        body.append(http_impl_class)
+        body.append(temp_http_class)
 
         # Create module
         module = ast.Module(body=body, type_ignores=[])
@@ -51,7 +69,7 @@ class HTTPGenerator:
 
         return module
 
-    def _create_imports(self, status_code_mapping: Dict[int, str], model_names: List[str] = None, extracted_data: Dict[str, Any] = None) -> List[ast.stmt]:
+    def _create_imports(self, status_code_mapping: Dict[int, str], model_names: List[str] = None, extracted_data: Dict[str, Any] = None, required_typing: set = None) -> List[ast.stmt]:
         """Create import statements including exception imports."""
         imports = []
 
