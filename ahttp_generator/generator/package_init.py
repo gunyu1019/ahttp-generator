@@ -6,7 +6,7 @@ Generates __init__.py for the generated package with proper exports.
 import ast
 from typing import Dict, Any, List
 
-from core.ast_helper import ASTHelper
+from ..core.ast_helper import ASTHelper
 
 
 class PackageInitGenerator:

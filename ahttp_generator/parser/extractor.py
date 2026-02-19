@@ -237,7 +237,7 @@ class OpenAPIExtractor:
         operation_id = operation.get('operationId', self._generate_operation_id(method, original_path))  # Use original_path for naming
 
         # Step 1: Determine function name (using sanitizer for consistency) - use original_path for naming
-        from core.sanitizer import IdentifierSanitizer
+        from ..core.sanitizer import IdentifierSanitizer
         func_name = IdentifierSanitizer.to_snake_case(operation_id)
 
         # Step 2: Determine response model name with priority logic
@@ -285,7 +285,7 @@ class OpenAPIExtractor:
 
     def _to_pascal_case_response(self, name: str) -> str:
         """Convert snake_case or camelCase to PascalCase + Response suffix."""
-        from core.sanitizer import IdentifierSanitizer
+        from ..core.sanitizer import IdentifierSanitizer
 
         # First sanitize to snake_case, then convert to PascalCase
         snake_case = IdentifierSanitizer.to_snake_case(name)
@@ -439,7 +439,7 @@ class OpenAPIExtractor:
         """Extract response information (legacy method - redirects to context-aware version)."""
         # Get operation ID and generate function name for backward compatibility
         operation_id = operation.get('operationId', self._generate_operation_id('get', '/unknown'))
-        from core.sanitizer import IdentifierSanitizer
+        from ..core.sanitizer import IdentifierSanitizer
         func_name = IdentifierSanitizer.to_snake_case(operation_id)
         suggested_model_name = self._determine_response_model_name(operation, func_name)
 
@@ -557,7 +557,7 @@ class OpenAPIExtractor:
 
     def _generate_response_model_name(self, operation_id: str, suffix: str = 'Response') -> str:
         """Generate unique response model name based on operation ID."""
-        from core.sanitizer import IdentifierSanitizer
+        from ..core.sanitizer import IdentifierSanitizer
 
         if not operation_id or operation_id == 'unknown':
             return f'Unknown{suffix}'
@@ -835,7 +835,7 @@ class OpenAPIExtractor:
         if not security_schemes:
             return []
 
-        from core.sanitizer import IdentifierSanitizer
+        from ..core.sanitizer import IdentifierSanitizer
 
         extracted_schemes = []
 
@@ -977,7 +977,7 @@ class OpenAPIExtractor:
         IMPORTANT: This only changes the Python method name (func_name), not the
         response model names which should remain based on operationId.
         """
-        from core.sanitizer import IdentifierSanitizer
+        from ..core.sanitizer import IdentifierSanitizer
 
         # Step 1: Generate function names for all operations
         for operation in operations:

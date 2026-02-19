@@ -6,7 +6,7 @@ Generates a unified exceptions.py from OpenAPI error responses.
 import ast
 from typing import Dict, Any
 
-from core.ast_helper import ASTHelper
+from ..core.ast_helper import ASTHelper
 
 
 class ExceptionsGenerator:

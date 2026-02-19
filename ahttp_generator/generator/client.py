@@ -6,10 +6,10 @@ Generates client facade class from OpenAPI specification (Facade Layer).
 import ast
 from typing import Dict, Any, List, Set
 
-from core.ast_helper import ASTHelper
-from core.sanitizer import IdentifierSanitizer
-from core.pep8_formatter import PEP8Formatter
-from generator.docstring import DocstringGenerator
+from ..core.ast_helper import ASTHelper
+from ..core.sanitizer import IdentifierSanitizer
+from ..core.pep8_formatter import PEP8Formatter
+from .docstring import DocstringGenerator
 
 
 class ClientGenerator:
@@ -73,7 +73,7 @@ class ClientGenerator:
         Returns:
             Type string to use (enum name or 'str')
         """
-        from core.type_mapper import TypeMapper
+        from ..core.type_mapper import TypeMapper
         
         param_name = param.get('name', '')
         schema = param.get('schema', param)  # Some parameters have schema nested
@@ -99,7 +99,7 @@ class ClientGenerator:
         Returns:
             Set of enum names that are used
         """
-        from core.type_mapper import TypeMapper
+        from ..core.type_mapper import TypeMapper
         
         used_enums = set()
         
@@ -737,7 +737,7 @@ class ClientGenerator:
                 param_desc = param.get('description', '').strip()
 
                 # For client layer, use more friendly names
-                from core.sanitizer import IdentifierSanitizer
+                from ..core.sanitizer import IdentifierSanitizer
                 if param_name == 'target_id':
                     friendly_name = 'target_channel_id'
                 else:

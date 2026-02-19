@@ -6,10 +6,10 @@ Generates individual model files with Pydantic BaseModel classes from OpenAPI sc
 import ast
 from typing import Dict, Any, List, Tuple, Set, Optional
 
-from core.ast_helper import ASTHelper
-from core.sanitizer import IdentifierSanitizer
-from core.type_mapper import TypeMapper
-from core.pep8_formatter import PEP8Formatter
+from ..core.ast_helper import ASTHelper
+from ..core.sanitizer import IdentifierSanitizer
+from ..core.type_mapper import TypeMapper
+from ..core.pep8_formatter import PEP8Formatter
 
 
 class ModelsGenerator:

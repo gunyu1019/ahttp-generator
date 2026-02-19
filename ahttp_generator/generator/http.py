@@ -6,10 +6,10 @@ Generates HTTP implementation class from OpenAPI specification (Implementation L
 import ast
 from typing import Dict, Any, List
 
-from core.ast_helper import ASTHelper
-from core.sanitizer import IdentifierSanitizer
-from core.pep8_formatter import PEP8Formatter
-from generator.docstring import DocstringGenerator
+from ..core.ast_helper import ASTHelper
+from ..core.sanitizer import IdentifierSanitizer
+from ..core.pep8_formatter import PEP8Formatter
+from .docstring import DocstringGenerator
 
 
 class HTTPGenerator:
@@ -1186,7 +1186,7 @@ class HTTPGenerator:
                 param_desc = param.get('description', '').strip()
 
                 # Sanitize parameter name for Python
-                from core.sanitizer import IdentifierSanitizer
+                from ..core.sanitizer import IdentifierSanitizer
                 sanitized_name = IdentifierSanitizer.to_snake_case(param_name)
 
                 docstring_param = {

@@ -6,18 +6,16 @@ CLI tool that generates a complete Python package from an OpenAPI Specification.
 
 import argparse
 import ast
-import json
-import os
 import pathlib
-from typing import Dict, Any
+from typing import Sequence
 
-from core.loader import load_spec
-from parser.extractor import OpenAPIExtractor
-from generator.models import ModelsGenerator
-from generator.client import ClientGenerator
-from generator.package_init import PackageInitGenerator
-from generator.exceptions import ExceptionsGenerator
-from generator.http import HTTPGenerator
+from .core.loader import load_spec
+from .parser.extractor import OpenAPIExtractor
+from .generator.models import ModelsGenerator
+from .generator.client import ClientGenerator
+from .generator.package_init import PackageInitGenerator
+from .generator.exceptions import ExceptionsGenerator
+from .generator.http import HTTPGenerator
 
 
 def write_ast_to_file(file_path: str, module_ast: ast.Module) -> None:
@@ -290,85 +288,112 @@ def fix_docstring_indentation(code: str) -> str:
     return '\n'.join(result_lines)
 
 
-def main():
+class MainController:
+    """Controller for coordinating OpenAPI extraction and client package generation."""
+
+    def __init__(self, input_file: str, output_dir: str = 'output') -> None:
+        self.input_file = input_file
+        self.output_dir = output_dir
+
+    def run(self) -> None:
+        print(f"Loading OpenAPI specification from {self.input_file}")
+        spec_data = load_spec(self.input_file)
+
+        print("Extracting OpenAPI components")
+        extractor = OpenAPIExtractor()
+        extracted_data = extractor.extract(spec_data)
+
+        print("Generating model files")
+        models_generator = ModelsGenerator()
+        model_modules, model_names = models_generator.generate(extracted_data)
+
+        print("Generating exception files")
+        exceptions_generator = ExceptionsGenerator()
+        exception_modules = exceptions_generator.generate(extracted_data)
+
+        print("Generating http.py")
+        http_generator = HTTPGenerator()
+        http_ast = http_generator.generate(extracted_data, model_names)
+
+        print("Generating client.py")
+        client_generator = ClientGenerator()
+        client_ast = client_generator.generate(extracted_data, model_names)
+
+        print("Generating __init__.py")
+        init_generator = PackageInitGenerator()
+        init_ast = init_generator.generate(extracted_data, model_names)
+
+        output_path = pathlib.Path(self.output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        print(f"Writing package files to {output_path}")
+
+        models_dir = output_path / 'models'
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        for filename, module_ast in model_modules.items():
+            model_file = models_dir / filename
+            write_ast_to_file(str(model_file), module_ast)
+            print(f"  + {model_file}")
+
+        for exception_file, exception_module in exception_modules.items():
+            exception_path = output_path / exception_file
+            write_ast_to_file(str(exception_path), exception_module)
+            print(f"  + {exception_path}")
+
+        http_file = output_path / 'http.py'
+        write_ast_to_file(str(http_file), http_ast)
+        print(f"  + {http_file}")
+
+        client_file = output_path / 'client.py'
+        write_ast_to_file(str(client_file), client_ast)
+        print(f"  + {client_file}")
+
+        init_file = output_path / '__init__.py'
+        write_ast_to_file(str(init_file), init_ast)
+        print(f"  + {init_file}")
+
+        print(f"Package '{self.output_dir}' generated successfully.")
+        print(f"You can now use: from {self.output_dir} import *")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build CLI argument parser for package generation command."""
     parser = argparse.ArgumentParser(
         description='Generate Python package from OpenAPI specification'
     )
-    parser.add_argument('input_file', help='Path to OpenAPI specification file (JSON, YAML, or XML)')
-    parser.add_argument('output_dir', help='Output directory name for generated package')
+    parser.add_argument(
+        '-i', '--input',
+        required=True,
+        help='Path to OpenAPI specification file (.json, .yaml, .yml)'
+    )
+    parser.add_argument(
+        '-o', '--output',
+        default='output',
+        help='Output directory for generated package (default: output)'
+    )
+    return parser
 
-    args = parser.parse_args()
 
-    # Load and parse OpenAPI specification
-    print(f"Loading OpenAPI specification from {args.input_file}")
-    spec_data = load_spec(args.input_file)
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI entrypoint."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
-    print("Extracting OpenAPI components")
-    extractor = OpenAPIExtractor()
-    extracted_data = extractor.extract(spec_data)
-
-    # Generate AST modules
-    print("Generating model files")
-    models_generator = ModelsGenerator()
-    model_modules, model_names = models_generator.generate(extracted_data)
-
-    print("Generating exception files")
-    exceptions_generator = ExceptionsGenerator()
-    exception_modules = exceptions_generator.generate(extracted_data)
-
-    print("Generating http.py")
-    http_generator = HTTPGenerator()
-    http_ast = http_generator.generate(extracted_data, model_names)
-
-    print("Generating client.py")
-    client_generator = ClientGenerator()
-    client_ast = client_generator.generate(extracted_data, model_names)
-
-    print("Generating __init__.py")
-    init_generator = PackageInitGenerator()
-    init_ast = init_generator.generate(extracted_data, model_names)
-
-    # Create output directory and write files
-    output_path = pathlib.Path(args.output_dir)
-    output_path.mkdir(exist_ok=True)
-
-    print(f"Writing package files to {output_path}")
-
-    # Create models directory and write model files
-    models_dir = output_path / 'models'
-    models_dir.mkdir(exist_ok=True)
-
-    for filename, module_ast in model_modules.items():
-        model_file = models_dir / filename
-        write_ast_to_file(str(model_file), module_ast)
-        print(f"  + {model_file}")
-
-    # Write exception modules
-    for exception_file, exception_module in exception_modules.items():
-        exception_path = output_path / exception_file
-        write_ast_to_file(str(exception_path), exception_module)
-        print(f"  + {exception_path}")
-
-    # Write HTTP handler
-    http_file = output_path / 'http.py'
-    write_ast_to_file(str(http_file), http_ast)
-    print(f"  + {http_file}")
-
-    # Write client module
-    client_file = output_path / 'client.py'
-    write_ast_to_file(str(client_file), client_ast)
-    print(f"  + {client_file}")
-
-    # Write __init__.py
-    init_file = output_path / '__init__.py'
-    write_ast_to_file(str(init_file), init_ast)
-    print(f"  + {init_file}")
-
-    print(f"** Package '{args.output_dir}' generated successfully!")
-    print(f"   You can now use: from {args.output_dir} import *")
+    try:
+        controller = MainController(input_file=args.input, output_dir=args.output)
+        controller.run()
+        return 0
+    except FileNotFoundError as exc:
+        print(f"Error: input file not found - {exc}")
+    except ValueError as exc:
+        print(f"Error: invalid OpenAPI specification - {exc}")
+    except Exception as exc:
+        print(f"Error: generation failed - {exc}")
+    return 1
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
 
 

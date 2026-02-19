@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ahttp_generator"
+version = "0.1.0"
+description = "OpenAPI to Python ahttp_client package generator"
+readme = "requests/request_final.md"
+requires-python = ">=3.9"
+authors = [
+  { name = "AI Developer" }
+]
+dependencies = [
+  "pyyaml>=6.0",
+  "pydantic>=2.0",
+  "autopep8>=2.0"
+]
+
+[project.scripts]
+ahttp-generator = "ahttp_generator.main:main"
+
+[tool.setuptools.packages.find]
+include = ["ahttp_generator*"]
