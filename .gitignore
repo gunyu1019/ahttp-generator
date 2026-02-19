@@ -190,6 +190,7 @@ pip-selfcheck.json
 .vscode/
 
 ### test generated file ###
+automatic_test/
 requests/
 test_*/
 test_*.json
