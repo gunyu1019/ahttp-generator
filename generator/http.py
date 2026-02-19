@@ -271,22 +271,6 @@ class HTTPGenerator:
                     defaults.append(ast.Constant(value=None))
 
                 param_index += 1
-                    # Use custom_name annotation
-                    annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
-                        sanitized_name,
-                        param_type,
-                        annotation_source,
-                        original_name
-                    )
-                else:
-                    # Use regular annotation
-                    annotated_arg = self.ast_helper.create_annotated_arg(
-                        sanitized_name,
-                        param_type,
-                        annotation_source
-                    )
-                args.append(annotated_arg)
-                param_index += 1
 
         # Add request body parameter with Annotated type
         if request_body:
