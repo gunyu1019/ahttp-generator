@@ -196,6 +196,7 @@ class HTTPGenerator:
 
         # Create method arguments
         args = [self.ast_helper.create_arg('self')]
+        defaults = []  # Track default values for optional parameters
         used_names = set()  # Track used parameter names to avoid collisions
 
         # Add path parameters with Annotated types
@@ -238,7 +239,8 @@ class HTTPGenerator:
                 sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
 
                 # Handle optional parameters
-                if not param.get('required', False):
+                is_required = param.get('required', False)
+                if not is_required:
                     param_type = f'Optional[{param_type}]'
 
                 # Handle name collisions
@@ -248,6 +250,27 @@ class HTTPGenerator:
 
                 # Check if we need custom_name
                 if original_name != f'arg_{param_index}' and IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
+                    # Use custom_name annotation
+                    annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
+                        sanitized_name,
+                        param_type,
+                        annotation_source,
+                        original_name
+                    )
+                else:
+                    # Use regular annotation
+                    annotated_arg = self.ast_helper.create_annotated_arg(
+                        sanitized_name,
+                        param_type,
+                        annotation_source
+                    )
+                args.append(annotated_arg)
+
+                # Add default value for optional parameters
+                if not is_required:
+                    defaults.append(ast.Constant(value=None))
+
+                param_index += 1
                     # Use custom_name annotation
                     annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
                         sanitized_name,
@@ -324,7 +347,8 @@ class HTTPGenerator:
             args=args,
             body=body,
             decorators=decorators,
-            returns=return_annotation
+            returns=return_annotation,
+            defaults=defaults  # Pass defaults for optional parameters
         )
 
     def _create_http_client_class(self, status_code_mapping: Dict[int, str]) -> ast.ClassDef:
@@ -961,11 +985,14 @@ class HTTPGenerator:
         args: List[ast.arg],
         body: List[ast.stmt],
         decorators: List[ast.expr] = None,
-        returns: ast.expr = None
+        returns: ast.expr = None,
+        defaults: List[ast.expr] = None
     ) -> ast.AsyncFunctionDef:
         """Create an async function definition."""
         if decorators is None:
             decorators = []
+        if defaults is None:
+            defaults = []
 
         func_def = ast.AsyncFunctionDef(
             name=name,
@@ -976,7 +1003,7 @@ class HTTPGenerator:
                 kwonlyargs=[],
                 kw_defaults=[],
                 kwarg=None,
-                defaults=[]
+                defaults=defaults  # Use provided defaults instead of empty list
             ),
             body=body,
             decorator_list=decorators,

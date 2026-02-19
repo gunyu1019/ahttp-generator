@@ -323,11 +323,14 @@ class ClientGenerator:
         args: List[ast.arg],
         body: List[ast.stmt],
         decorators: List[ast.expr] = None,
-        returns: ast.expr = None
+        returns: ast.expr = None,
+        defaults: List[ast.expr] = None
     ) -> ast.AsyncFunctionDef:
         """Create an async function definition."""
         if decorators is None:
             decorators = []
+        if defaults is None:
+            defaults = []
 
         func_def = ast.AsyncFunctionDef(
             name=name,
@@ -338,7 +341,7 @@ class ClientGenerator:
                 kwonlyargs=[],
                 kw_defaults=[],
                 kwarg=None,
-                defaults=[]
+                defaults=defaults
             ),
             body=body,
             decorator_list=decorators,
