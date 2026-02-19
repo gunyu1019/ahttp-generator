@@ -197,6 +197,8 @@ class HTTPGenerator:
         # Create method arguments
         args = [self.ast_helper.create_arg('self')]
         defaults = []  # Track default values for optional parameters
+        # Track parameter name mappings for URL template replacement
+        param_name_mappings = {}
         used_names = set()  # Track used parameter names to avoid collisions
 
         # Add path parameters with Annotated types
@@ -212,22 +214,16 @@ class HTTPGenerator:
                     sanitized_name = f"{sanitized_name}_{param_index}"
                 used_names.add(sanitized_name)
 
-                # Check if we need custom_name
-                if original_name != f'arg_{param_index}' and IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
-                    # Use custom_name annotation
-                    annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
-                        sanitized_name,
-                        param_type,
-                        annotation_source,
-                        original_name
-                    )
-                else:
-                    # Use regular annotation
-                    annotated_arg = self.ast_helper.create_annotated_arg(
-                        sanitized_name,
-                        param_type,
-                        annotation_source
-                    )
+                # Store mapping for URL template replacement
+                if original_name != sanitized_name:
+                    param_name_mappings[original_name] = sanitized_name
+
+                # Always use regular annotation (no custom_name)
+                annotated_arg = self.ast_helper.create_annotated_arg(
+                    sanitized_name,
+                    param_type,
+                    annotation_source
+                )
                 args.append(annotated_arg)
                 param_index += 1
 
@@ -248,22 +244,12 @@ class HTTPGenerator:
                     sanitized_name = f"{sanitized_name}_{param_index}"
                 used_names.add(sanitized_name)
 
-                # Check if we need custom_name
-                if original_name != f'arg_{param_index}' and IdentifierSanitizer.needs_custom_name(original_name, sanitized_name):
-                    # Use custom_name annotation
-                    annotated_arg = self.ast_helper.create_annotated_arg_with_custom_name(
-                        sanitized_name,
-                        param_type,
-                        annotation_source,
-                        original_name
-                    )
-                else:
-                    # Use regular annotation
-                    annotated_arg = self.ast_helper.create_annotated_arg(
-                        sanitized_name,
-                        param_type,
-                        annotation_source
-                    )
+                # Always use regular annotation (no custom_name)
+                annotated_arg = self.ast_helper.create_annotated_arg(
+                    sanitized_name,
+                    param_type,
+                    annotation_source
+                )
                 args.append(annotated_arg)
 
                 # Add default value for optional parameters
@@ -287,6 +273,12 @@ class HTTPGenerator:
 
         return_annotation = self._parse_return_type(return_type) if return_type else None
 
+        # Apply URL template parameter name replacements
+        updated_path = path
+        for original_name, sanitized_name in param_name_mappings.items():
+            # Replace {originalName} with {sanitized_name} in URL template
+            updated_path = updated_path.replace(f"{{{original_name}}}", f"{{{sanitized_name}}}")
+
         # Create decorators list
         decorators = []
 
@@ -299,12 +291,12 @@ class HTTPGenerator:
             )
             decorators.append(pydantic_decorator)
 
-        # Add request decorator
+        # Add request decorator with updated path
         request_decorator = ast.Call(
             func=ast.Name(id='request', ctx=ast.Load()),
             args=[
                 self.ast_helper.create_string_constant(method),
-                self.ast_helper.create_string_constant(path)
+                self.ast_helper.create_string_constant(updated_path)  # Use updated path with sanitized parameter names
             ],
             keywords=[
                 ast.keyword(arg='directly_response', value=ast.Constant(value=True))

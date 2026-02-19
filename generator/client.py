@@ -25,8 +25,8 @@ class ClientGenerator:
         Generate AST module for client.py (Facade Layer) with PEP 8 compliance.
         """
         service_name = extracted_data.get('service_name', 'ApiService')
-        servers = extracted_data.get('servers', ['https://api.example.com'])
-        base_url = servers[0]
+        servers_info = extracted_data.get('servers', {'base_url': 'https://api.example.com', 'base_path': ''})
+        base_url = servers_info.get('base_url', 'https://api.example.com')
 
         # Create module body
         body = []

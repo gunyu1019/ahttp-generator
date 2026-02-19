@@ -110,26 +110,97 @@ class OpenAPIExtractor:
             'description': info.get('description', '')
         }
 
-    def _extract_servers(self, spec: Dict[str, Any]) -> List[str]:
-        """Extract server URLs."""
+    def _extract_servers(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract server URLs with proper base URL and base path separation.
+
+        Returns:
+            Dictionary containing 'base_url' and 'base_path'
+        """
         servers = spec.get('servers', [])
         if not servers:
-            return ['https://api.example.com']
+            return {
+                'base_url': 'https://api.example.com',
+                'base_path': ''
+            }
 
-        return [server.get('url', 'https://api.example.com') for server in servers]
+        server_url = servers[0].get('url', 'https://api.example.com')
+
+        # Handle server variables by using default values
+        variables = servers[0].get('variables', {})
+        for var_name, var_def in variables.items():
+            default_value = var_def.get('default', '')
+            server_url = server_url.replace(f'{{{var_name}}}', default_value)
+
+        # Parse URL to separate base URL from base path
+        from urllib.parse import urlparse
+        parsed = urlparse(server_url)
+
+        # Base URL is scheme + netloc (no path)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        # Base path is the path component (if any)
+        base_path = parsed.path if parsed.path else ''
+
+        # Ensure base_url never ends with '/'
+        base_url = base_url.rstrip('/')
+
+        # Ensure base_path is properly formatted
+        if base_path and not base_path.startswith('/'):
+            base_path = '/' + base_path
+        if base_path.endswith('/'):
+            base_path = base_path.rstrip('/')
+
+        return {
+            'base_url': base_url,
+            'base_path': base_path
+        }
 
     def _extract_paths(self, spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract API paths and operations."""
         paths = spec.get('paths', {})
         operations = []
 
+        # Get base path from servers
+        servers_info = self._extract_servers(spec)
+        base_path = servers_info.get('base_path', '')
+
         for path, path_item in paths.items():
+            # Combine base_path with endpoint path
+            full_path = self._combine_paths(base_path, path)
+
             for method, operation in path_item.items():
                 if method.lower() in ['get', 'post', 'put', 'delete', 'patch', 'head', 'options']:
-                    op_data = self._extract_operation(path, method.upper(), operation)
+                    op_data = self._extract_operation(full_path, method.upper(), operation)
                     operations.append(op_data)
 
         return operations
+
+    def _combine_paths(self, base_path: str, endpoint_path: str) -> str:
+        """
+        Combine base path and endpoint path properly.
+
+        Args:
+            base_path: Base path from server URL (e.g., '/shards/steam')
+            endpoint_path: Individual endpoint path (e.g., '/players')
+
+        Returns:
+            Combined path (e.g., '/shards/steam/players')
+        """
+        # Ensure endpoint_path starts with '/'
+        if not endpoint_path.startswith('/'):
+            endpoint_path = '/' + endpoint_path
+
+        # If no base_path, return endpoint_path as is
+        if not base_path:
+            return endpoint_path
+
+        # Remove trailing '/' from base_path if exists
+        if base_path.endswith('/'):
+            base_path = base_path.rstrip('/')
+
+        # Combine paths
+        return base_path + endpoint_path
 
     def _extract_operation(self, path: str, method: str, operation: Dict[str, Any]) -> Dict[str, Any]:
         """Extract single operation data with context injection for response model naming."""
