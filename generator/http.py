@@ -108,12 +108,15 @@ class HTTPGenerator:
 
         # Import models if any exist
         if model_names and len(model_names) > 0:
-            # Separate domain models and response models
+            # Separate domain models, success response models, and error response models
             domain_models = []
             response_models = []
+            error_models = []
 
             for model_name in model_names:
-                if model_name.endswith('Response'):
+                if model_name.endswith('ErrorResponse'):
+                    error_models.append(model_name)
+                elif model_name.endswith('Response'):
                     response_models.append(model_name)
                 else:
                     domain_models.append(model_name)
@@ -125,6 +128,10 @@ class HTTPGenerator:
             # Import response models from response.py
             if response_models:
                 imports.append(self.ast_helper.create_relative_import('models.response', response_models))
+
+            # Import error models from error.py
+            if error_models:
+                imports.append(self.ast_helper.create_relative_import('models.error', error_models))
 
         # Import exceptions if any exist
         if status_code_mapping:
@@ -816,28 +823,13 @@ class HTTPGenerator:
             comparators=[ast.Constant(value=status_code)]
         )
 
-        # Create body: text = await response.text(); raise ExceptionName(text)
+        # Create body: raise ExceptionName()
         body = [
-            # text = await response.text()
-            ast.Assign(
-                targets=[ast.Name(id='text', ctx=ast.Store())],
-                value=ast.Await(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
-                            attr='text',
-                            ctx=ast.Load()
-                        ),
-                        args=[],
-                        keywords=[]
-                    )
-                )
-            ),
-            # raise ExceptionName(text)
+            # raise ExceptionName()
             ast.Raise(
                 exc=ast.Call(
                     func=ast.Name(id=exception_name, ctx=ast.Load()),
-                    args=[ast.Name(id='text', ctx=ast.Load())],
+                    args=[],
                     keywords=[]
                 ),
                 cause=None

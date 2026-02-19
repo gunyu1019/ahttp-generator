@@ -35,11 +35,20 @@ class OpenAPIExtractor:
 
         # Combine error responses from all operations
         all_error_responses = {}
+        error_schemas = {}  # For collecting unique error schemas
+
         for operation in extracted_data['paths']:
             error_responses = operation.get('error_responses', {})
             for status_code, error_info in error_responses.items():
                 if status_code not in all_error_responses:
                     all_error_responses[status_code] = error_info
+                    # Generate error model name and collect schema for Pydantic generation
+                    error_model_name = self._generate_error_model_name(status_code)
+                    error_schemas[error_model_name] = {
+                        'status_code': status_code,
+                        'schema': error_info.get('schema', {'type': 'object'}),
+                        'description': error_info.get('description', f'Error response for {status_code}')
+                    }
                 # If same status code exists, merge descriptions
                 elif error_info['description'] not in all_error_responses[status_code]['description']:
                     current_desc = all_error_responses[status_code]['description']
@@ -47,6 +56,7 @@ class OpenAPIExtractor:
                     all_error_responses[status_code]['description'] = f"{current_desc}; {new_desc}"
 
         extracted_data['error_responses'] = all_error_responses
+        extracted_data['error_schemas'] = error_schemas
 
         # Collect inline response models from operations
         inline_response_models = {}
@@ -568,8 +578,8 @@ class OpenAPIExtractor:
         error_responses = {}
 
         for status_code, response in responses.items():
-            # Only process non-success status codes
-            if not status_code.startswith('2') and status_code.isdigit():
+            # Process client/server error status codes only (4xx, 5xx)
+            if status_code.isdigit() and (status_code.startswith('4') or status_code.startswith('5')):
                 error_responses[status_code] = {
                     'description': response.get('description', f'Error {status_code}'),
                     'content': response.get('content', {}),
@@ -581,8 +591,17 @@ class OpenAPIExtractor:
     def _extract_error_schema(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """Extract schema from error response."""
         content = response.get('content', {})
-        json_content = content.get('application/json', {})
-        return json_content.get('schema', {'type': 'object'})
+
+        # Prefer application/json first
+        if 'application/json' in content:
+            return content['application/json'].get('schema', {'type': 'object'})
+
+        # Fallback to first available content type schema
+        for media_type in content.values():
+            if isinstance(media_type, dict) and 'schema' in media_type:
+                return media_type.get('schema', {'type': 'object'})
+
+        return {'type': 'object'}
 
     def _extract_schemas(self, spec: Dict[str, Any]) -> Dict[str, Any]:
         """Extract component schemas with documentation metadata."""
@@ -1167,3 +1186,37 @@ class OpenAPIExtractor:
             result = 'UNKNOWN'
         
         return result
+
+    def _generate_error_model_name(self, status_code: str) -> str:
+        """
+        Generate error model name from HTTP status code.
+        
+        Args:
+            status_code: HTTP status code (e.g., '404', '500')
+            
+        Returns:
+            Error model class name (e.g., 'NotFoundErrorResponse')
+        """
+        # Map common status codes to descriptive names
+        status_name_map = {
+            '400': 'BadRequest',
+            '401': 'Unauthorized', 
+            '403': 'Forbidden',
+            '404': 'NotFound',
+            '405': 'MethodNotAllowed',
+            '409': 'Conflict',
+            '422': 'UnprocessableEntity',
+            '429': 'TooManyRequests',
+            '500': 'InternalServer',
+            '502': 'BadGateway',
+            '503': 'ServiceUnavailable',
+            '504': 'GatewayTimeout'
+        }
+        
+        # Use descriptive name if available, otherwise use generic format
+        if status_code in status_name_map:
+            base_name = status_name_map[status_code]
+        else:
+            base_name = f'HttpError{status_code}'
+        
+        return f'{base_name}ErrorResponse'

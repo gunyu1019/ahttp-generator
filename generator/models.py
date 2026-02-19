@@ -31,6 +31,7 @@ class ModelsGenerator:
         """
         schemas = extracted_data.get('schemas', {})
         response_models = extracted_data.get('response_models', {})
+        error_schemas = extracted_data.get('error_schemas', {})  # New: error model schemas
         paths = extracted_data.get('paths', [])
         enums = extracted_data.get('enums', {})
 
@@ -60,14 +61,20 @@ class ModelsGenerator:
             filename = self._to_snake_case(request_name) + '.py'
             model_modules[filename] = request_module
 
+        # Generate error models from error schemas
+        if error_schemas:
+            error_module, error_model_names = self._generate_error_models(error_schemas, enums)
+            model_modules['error.py'] = error_module
+            model_names.extend(error_model_names)
+
         # Generate response.py file if there are response models
         if response_models:
             response_module, response_model_names = self._generate_response_module(response_models, model_names, enums)
             model_modules['response.py'] = response_module
             model_names.extend(response_model_names)
 
-        # Generate models/__init__.py
-        init_module = self._create_models_init_module(model_names, bool(response_models))
+        # Generate models/__init__.py 
+        init_module = self._create_models_init_module(model_names, bool(response_models), bool(error_schemas))
         model_modules['__init__.py'] = init_module
         
         return model_modules, model_names
@@ -151,7 +158,7 @@ class ModelsGenerator:
             imports.append(self.ast_helper.create_import('enum', ['Enum']))
         
         # Typing imports
-        typing_imports = ['Optional']  # Always include Optional
+        typing_imports = ['Optional', 'Union']  # Always include Optional and Union
         
         # Get typing imports based on types used
         type_imports = self.type_mapper.get_imports_for_types(types_used)
@@ -177,16 +184,24 @@ class ModelsGenerator:
         
         return imports
     
-    def _create_models_init_module(self, model_names: List[str], has_response_models: bool = False) -> ast.Module:
+    def _create_models_init_module(
+        self,
+        model_names: List[str],
+        has_response_models: bool = False,
+        has_error_models: bool = False
+    ) -> ast.Module:
         """Create __init__.py module that exports all models."""
         body = []
         
-        # Separate domain models and response models
+        # Separate domain models, response models, and error response models
         domain_models = []
         response_models = []
+        error_models = []
 
         for model_name in model_names:
-            if model_name.endswith('Response'):
+            if model_name.endswith('ErrorResponse'):
+                error_models.append(model_name)
+            elif model_name.endswith('Response'):
                 response_models.append(model_name)
             else:
                 domain_models.append(model_name)
@@ -200,6 +215,11 @@ class ModelsGenerator:
         # Import response models from response.py if exists
         if response_models and has_response_models:
             import_stmt = self.ast_helper.create_relative_import('response', sorted(response_models))
+            body.append(import_stmt)
+
+        # Import error models from error.py if exists
+        if error_models and has_error_models:
+            import_stmt = self.ast_helper.create_relative_import('error', sorted(error_models))
             body.append(import_stmt)
 
         # Create __all__ list
@@ -507,6 +527,38 @@ class ModelsGenerator:
         snake_case = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', pascal_case)
         snake_case = re.sub('([a-z0-9])([A-Z])', r'\1_\2', snake_case)
         return snake_case.lower()
+
+    def _generate_error_models(self, error_schemas: Dict[str, Dict[str, Any]], enums: Dict[str, Any] = None) -> Tuple[ast.Module, List[str]]:
+        """Generate error.py module containing all error response models."""
+        if enums is None:
+            enums = {}
+
+        error_model_names = []
+        body = []
+
+        imports = self._create_error_imports()
+        body.extend(imports)
+
+        for model_name, error_info in error_schemas.items():
+            model_schema = error_info.get('schema', {'type': 'object'})
+            error_model_names.append(model_name)
+            model_class = self._create_model_class(model_name, model_schema, error_schemas, enums)
+            body.append(model_class)
+
+        module = ast.Module(body=body, type_ignores=[])
+        ast.fix_missing_locations(module)
+
+        return module, error_model_names
+
+    def _create_error_imports(self) -> List[ast.stmt]:
+        """Create import statements for error.py module."""
+        imports = []
+
+        imports.append(self.ast_helper.create_import('pydantic', ['BaseModel']))
+        imports.append(self.ast_helper.create_import('typing', ['List', 'Optional', 'Dict', 'Any', 'Union']))
+        imports.append(self.ast_helper.create_import('datetime', ['date', 'datetime']))
+
+        return imports
 
     def _generate_response_module(self, response_models: Dict[str, Dict[str, Any]], domain_models: List[str], enums: Dict[str, Any] = None) -> Tuple[ast.Module, List[str]]:
         """Generate response.py module containing all response models."""

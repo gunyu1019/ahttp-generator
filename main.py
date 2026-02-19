@@ -323,13 +323,9 @@ def main():
         write_ast_to_file(str(model_file), module_ast)
         print(f"  + {model_file}")
 
-    # Create exceptions directory and write exception files
-    if exception_modules:
-        exceptions_dir = output_path / 'exceptions'
-        exceptions_dir.mkdir(exist_ok=True)
-
+    # Write exception modules
     for exception_file, exception_module in exception_modules.items():
-        exception_path = exceptions_dir / exception_file
+        exception_path = output_path / exception_file
         write_ast_to_file(str(exception_path), exception_module)
         print(f"  + {exception_path}")
 
