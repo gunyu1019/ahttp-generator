@@ -646,6 +646,13 @@ class ModelsGenerator:
         if not schema or not isinstance(schema, dict):
             return dependencies
 
+        # Check polymorphic schemas (oneOf/anyOf)
+        for poly_key in ['oneOf', 'anyOf']:
+            if poly_key in schema and isinstance(schema[poly_key], list):
+                for sub_schema in schema[poly_key]:
+                    deps = self._find_type_dependencies(sub_schema, domain_models)
+                    dependencies.extend(deps)
+
         # Check for $ref
         if '$ref' in schema:
             ref_path = schema['$ref']
