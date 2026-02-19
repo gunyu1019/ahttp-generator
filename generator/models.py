@@ -151,7 +151,7 @@ class ModelsGenerator:
             imports.append(self.ast_helper.create_import('enum', ['Enum']))
         
         # Typing imports
-        typing_imports = ['Optional']  # Always include Optional
+        typing_imports = ['Optional', 'Union']  # Always include Optional and Union
         
         # Get typing imports based on types used
         type_imports = self.type_mapper.get_imports_for_types(types_used)
