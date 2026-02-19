@@ -1,24 +1,42 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "ahttp_generator"
 version = "0.1.0"
-description = "OpenAPI to Python ahttp_client package generator"
-readme = "requests/request_final.md"
-requires-python = ">=3.9"
+description = "A generator to provide OpenAPI to Python package by ahttp-client"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
 authors = [
-  { name = "AI Developer" }
+  { name = "gunyu1019", email = "gunyu1019@gmail.com" }
 ]
-dependencies = [
-  "pyyaml>=6.0",
-  "pydantic>=2.0",
-  "autopep8>=2.0"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Natural Language :: Korean",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet",
+    "Topic :: Utilities",
 ]
+
+[project.urls]
+"Homepage" = "https://github.com/gunyu1019/ahttp-client_generator"
+"Issue tracker" = "https://github.com/gunyu1019/ahttp-client_generator/issues"
 
 [project.scripts]
 ahttp-generator = "ahttp_generator.main:main"
 
 [tool.setuptools.packages.find]
 include = ["ahttp_generator*"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = "requirements.txt" }
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
