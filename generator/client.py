@@ -298,6 +298,7 @@ class ClientGenerator:
 
         # Create method arguments (clean interface without Annotated)
         args = [self.ast_helper.create_arg('self')]
+        defaults = []  # Track default values for optional parameters
         call_keywords = []  # For delegation call
 
         # Add path parameters with friendly names
@@ -323,14 +324,60 @@ class ClientGenerator:
                 ))
                 param_index += 1
 
-        # Add query parameters
+        # Add query parameters with proper Optional handling
         for param in parameters:
             if param['in'] == 'query':
                 original_name = param.get('name', f'arg_{param_index}')
                 sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
+                is_required = param.get('required', False)
 
-                arg = self.ast_helper.create_arg(sanitized_name, ast.Name(id='str', ctx=ast.Load()))
+                # Create type annotation - Optional for non-required parameters
+                if is_required:
+                    type_annotation = ast.Name(id='str', ctx=ast.Load())
+                else:
+                    type_annotation = ast.Subscript(
+                        value=ast.Name(id='Optional', ctx=ast.Load()),
+                        slice=ast.Name(id='str', ctx=ast.Load()),
+                        ctx=ast.Load()
+                    )
+
+                arg = self.ast_helper.create_arg(sanitized_name, type_annotation)
                 args.append(arg)
+                
+                # Add default value for optional parameters
+                if not is_required:
+                    defaults.append(ast.Constant(value=None))
+                
+                # Add to delegation call using sanitized name
+                call_keywords.append(ast.keyword(
+                    arg=sanitized_name,  # HTTP layer uses sanitized name for parameters
+                    value=ast.Name(id=sanitized_name, ctx=ast.Load())
+                ))
+                param_index += 1
+
+        # Add header parameters with proper Optional handling
+        for param in parameters:
+            if param['in'] == 'header':
+                original_name = param.get('name', f'arg_{param_index}')
+                sanitized_name = IdentifierSanitizer.to_snake_case(original_name) if original_name != f'arg_{param_index}' else original_name
+                is_required = param.get('required', False)
+
+                # Create type annotation - Optional for non-required parameters
+                if is_required:
+                    type_annotation = ast.Name(id='str', ctx=ast.Load())
+                else:
+                    type_annotation = ast.Subscript(
+                        value=ast.Name(id='Optional', ctx=ast.Load()),
+                        slice=ast.Name(id='str', ctx=ast.Load()),
+                        ctx=ast.Load()
+                    )
+
+                arg = self.ast_helper.create_arg(sanitized_name, type_annotation)
+                args.append(arg)
+                
+                # Add default value for optional parameters
+                if not is_required:
+                    defaults.append(ast.Constant(value=None))
                 
                 # Add to delegation call using sanitized name
                 call_keywords.append(ast.keyword(
@@ -391,7 +438,8 @@ class ClientGenerator:
             args=args,
             body=body,
             decorators=[],  # No decorators in facade layer
-            returns=return_annotation
+            returns=return_annotation,
+            defaults=defaults  # Pass default values for optional parameters
         )
 
     def _create_async_function_def(
