@@ -64,10 +64,10 @@ class HTTPGenerator:
         # Add Optional if needed
         typing_imports.append('Optional')
 
-        # Add Tuple if there are query authentication schemes
+        # Add Tuple and check if we need RequestCore for authentication schemes
         security_schemes = extracted_data.get('security_schemes', []) if extracted_data else []
-        has_query_auth = any(scheme.get('target') == 'query' for scheme in security_schemes)
-        if has_query_auth:
+        injectable_schemes = [s for s in security_schemes if s.get('target') in ['header', 'cookie', 'query']]
+        if injectable_schemes:
             typing_imports.append('Tuple')
 
         imports.append(self.ast_helper.create_import('typing', typing_imports))
@@ -75,8 +75,8 @@ class HTTPGenerator:
         # Import ahttp_client Session and decorators
         ahttp_imports = ['Session', 'request', 'Body', 'Path', 'Query']
 
-        # Add RequestCore import if there are query authentication schemes
-        if has_query_auth:
+        # Add RequestCore import if there are injectable authentication schemes
+        if injectable_schemes:
             ahttp_imports.append('RequestCore')
 
         imports.append(self.ast_helper.create_import('ahttp_client', ahttp_imports))
@@ -131,11 +131,12 @@ class HTTPGenerator:
         init_method = self._create_init_method(extracted_data)
         class_body.append(init_method)
 
-        # Add before_request hook method if there are query auth schemes
+        # Add before_request hook method if there are any authentication schemes
         security_schemes = extracted_data.get('security_schemes', [])
-        query_schemes = [s for s in security_schemes if s.get('target') == 'query']
-        if query_schemes:
-            before_request_method = self._create_before_request_method(query_schemes)
+        # Filter out oauth2_creds as they are stored but not directly injected in before_request
+        injectable_schemes = [s for s in security_schemes if s.get('target') in ['header', 'cookie', 'query']]
+        if injectable_schemes:
+            before_request_method = self._create_before_request_method(injectable_schemes)
             class_body.append(before_request_method)
 
         # Add after_request hook method if there are error responses
@@ -366,11 +367,21 @@ class HTTPGenerator:
             )
         ]
 
-        # Add authentication logic for each security scheme
+        # Store authentication parameters as instance variables (not directly in headers/cookies)
         for scheme in security_schemes:
-            auth_logic = self._create_auth_logic(scheme)
-            if auth_logic:
-                body.append(auth_logic)
+            arg_name = scheme['arg_name']
+            # Create assignment: self.{arg_name} = {arg_name}
+            assignment = ast.Assign(
+                targets=[
+                    ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr=arg_name,
+                        ctx=ast.Store()
+                    )
+                ],
+                value=ast.Name(id=arg_name, ctx=ast.Load())
+            )
+            body.append(assignment)
 
         # Create function definition with defaults support
         func_def = ast.FunctionDef(
@@ -438,8 +449,8 @@ class HTTPGenerator:
 
         return ast.fix_missing_locations(func_def)
 
-    def _create_before_request_method(self, query_schemes: List[Dict[str, Any]]) -> ast.AsyncFunctionDef:
-        """Create before_request hook method for query parameter authentication."""
+    def _create_before_request_method(self, security_schemes: List[Dict[str, Any]]) -> ast.AsyncFunctionDef:
+        """Create before_request hook method for all authentication types (header, cookie, query)."""
         # Create arguments: self, request: RequestCore, path: str
         args = [
             self.ast_helper.create_arg('self'),
@@ -450,37 +461,108 @@ class HTTPGenerator:
         # Create method body
         body = []
 
-        # Add query parameter injection for each query auth scheme
-        for scheme in query_schemes:
+        # Process each security scheme and add appropriate logic
+        for scheme in security_schemes:
             arg_name = scheme['arg_name']
-            key_name = scheme['key']
+            target = scheme['target']
+            key = scheme['key']
+            format_str = scheme.get('format', '{}')
 
-            # Create if statement: if self.{arg_name}:
+            # Create condition: if self.{arg_name}:
             condition = ast.Attribute(
                 value=ast.Name(id='self', ctx=ast.Load()),
                 attr=arg_name,
                 ctx=ast.Load()
             )
 
-            # Create assignment: request.params['{key_name}'] = self.{arg_name}
-            assignment = ast.Assign(
-                targets=[
-                    ast.Subscript(
-                        value=ast.Attribute(
-                            value=ast.Name(id='request', ctx=ast.Load()),
-                            attr='params',
+            # Create assignment based on target type
+            if target == 'header':
+                # request.headers['{key}'] = format_str.format(self.{arg_name})
+                if '{}' in format_str and format_str != '{}':
+                    # Format string like "Bearer {}"
+                    value_expr = ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Constant(value=format_str),
+                            attr='format',
                             ctx=ast.Load()
                         ),
-                        slice=ast.Constant(value=key_name),
-                        ctx=ast.Store()
+                        args=[
+                            ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr=arg_name,
+                                ctx=ast.Load()
+                            )
+                        ],
+                        keywords=[]
                     )
-                ],
-                value=ast.Attribute(
-                    value=ast.Name(id='self', ctx=ast.Load()),
-                    attr=arg_name,
-                    ctx=ast.Load()
+                else:
+                    # Direct value
+                    value_expr = ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr=arg_name,
+                        ctx=ast.Load()
+                    )
+
+                assignment = ast.Assign(
+                    targets=[
+                        ast.Subscript(
+                            value=ast.Attribute(
+                                value=ast.Name(id='request', ctx=ast.Load()),
+                                attr='headers',
+                                ctx=ast.Load()
+                            ),
+                            slice=ast.Constant(value=key),
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=value_expr
                 )
-            )
+
+            elif target == 'cookie':
+                # request.cookies['{key}'] = self.{arg_name}
+                assignment = ast.Assign(
+                    targets=[
+                        ast.Subscript(
+                            value=ast.Attribute(
+                                value=ast.Name(id='request', ctx=ast.Load()),
+                                attr='cookies',
+                                ctx=ast.Load()
+                            ),
+                            slice=ast.Constant(value=key),
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr=arg_name,
+                        ctx=ast.Load()
+                    )
+                )
+
+            elif target == 'query':
+                # request.params['{key}'] = self.{arg_name}
+                assignment = ast.Assign(
+                    targets=[
+                        ast.Subscript(
+                            value=ast.Attribute(
+                                value=ast.Name(id='request', ctx=ast.Load()),
+                                attr='params',
+                                ctx=ast.Load()
+                            ),
+                            slice=ast.Constant(value=key),
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr=arg_name,
+                        ctx=ast.Load()
+                    )
+                )
+
+            else:
+                # Skip unsupported targets (oauth2 credentials are stored but not injected here)
+                continue
 
             # Add if statement to body
             if_stmt = ast.If(
@@ -823,101 +905,3 @@ class HTTPGenerator:
 
         return ast.fix_missing_locations(func_def)
 
-    def _create_auth_logic(self, scheme: Dict[str, Any]) -> ast.If:
-        """Create authentication logic for a security scheme."""
-        arg_name = scheme['arg_name']
-        target = scheme['target']
-        key = scheme['key']
-        format_str = scheme['format']
-
-        # Create condition: if arg_name:
-        condition = ast.Name(id=arg_name, ctx=ast.Load())
-
-        # Create the assignment based on target (header, cookie, or query)
-        if target == 'header':
-            # self.headers[key] = format_str.format(arg_name)
-            if '{}' in format_str:
-                # Format string like "Bearer {}"
-                value_expr = ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Constant(value=format_str),
-                        attr='format',
-                        ctx=ast.Load()
-                    ),
-                    args=[ast.Name(id=arg_name, ctx=ast.Load())],
-                    keywords=[]
-                )
-            else:
-                # Direct value like "{}"
-                value_expr = ast.Name(id=arg_name, ctx=ast.Load())
-
-            assignment = ast.Assign(
-                targets=[
-                    ast.Subscript(
-                        value=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='headers',
-                            ctx=ast.Load()
-                        ),
-                        slice=ast.Constant(value=key),
-                        ctx=ast.Store()
-                    )
-                ],
-                value=value_expr
-            )
-
-        elif target == 'cookie':
-            # self.cookies[key] = arg_name
-            assignment = ast.Assign(
-                targets=[
-                    ast.Subscript(
-                        value=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='cookies',
-                            ctx=ast.Load()
-                        ),
-                        slice=ast.Constant(value=key),
-                        ctx=ast.Store()
-                    )
-                ],
-                value=ast.Name(id=arg_name, ctx=ast.Load())
-            )
-
-        elif target == 'query':
-            # For query parameters, store as instance variable: self.{arg_name} = {arg_name}
-            assignment = ast.Assign(
-                targets=[
-                    ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
-                        attr=arg_name,
-                        ctx=ast.Store()
-                    )
-                ],
-                value=ast.Name(id=arg_name, ctx=ast.Load())
-            )
-
-        elif target == 'oauth2':
-            # For OAuth2 credentials, store as instance variable: self.{arg_name} = {arg_name}
-            assignment = ast.Assign(
-                targets=[
-                    ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
-                        attr=arg_name,
-                        ctx=ast.Store()
-                    )
-                ],
-                value=ast.Name(id=arg_name, ctx=ast.Load())
-            )
-
-        else:
-            # Unsupported target - skip
-            return None
-
-        # Create if statement
-        if_stmt = ast.If(
-            test=condition,
-            body=[assignment],
-            orelse=[]
-        )
-
-        return if_stmt
