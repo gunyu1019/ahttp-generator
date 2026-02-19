@@ -7,6 +7,7 @@ import ast
 from typing import Dict, Any, List, Tuple, Set, Optional
 
 from core.ast_helper import ASTHelper
+from core.sanitizer import IdentifierSanitizer
 from core.type_mapper import TypeMapper
 from core.pep8_formatter import PEP8Formatter
 
@@ -169,7 +170,10 @@ class ModelsGenerator:
             model_enums = {}
         
         # Pydantic import
-        imports.append(self.ast_helper.create_import('pydantic', ['BaseModel']))
+        pydantic_imports = ['BaseModel']
+        if self._requires_field_alias(schema):
+            pydantic_imports.append('Field')
+        imports.append(self.ast_helper.create_import('pydantic', pydantic_imports))
         
         # Enum import if we have enums
         if model_enums:
@@ -304,6 +308,7 @@ class ModelsGenerator:
         # Add properties
         properties = schema.get('properties', {})
         required_fields = set(schema.get('required', []))
+        used_field_names: Set[str] = set()
         
         if not properties:
             # Empty model
@@ -312,14 +317,26 @@ class ModelsGenerator:
             for prop_name, prop_schema in properties.items():
                 # Store current field name for field annotation context
                 self._current_field_name = prop_name
+                sanitized_prop_name = self._sanitize_field_name(prop_name, used_field_names)
                 
                 is_required = prop_name in required_fields
                 field_annotation = self._create_field_annotation(prop_schema, schemas, is_required, model_enums)
+
+                field_value = None
+                if sanitized_prop_name != prop_name:
+                    field_value = ast.Call(
+                        func=ast.Name(id='Field', ctx=ast.Load()),
+                        args=[],
+                        keywords=[
+                            ast.keyword(arg='alias', value=ast.Constant(value=prop_name))
+                        ]
+                    )
                 
                 # Create field assignment
                 field_assign = self.ast_helper.create_ann_assign(
-                    target=prop_name,
-                    annotation=field_annotation
+                    target=sanitized_prop_name,
+                    annotation=field_annotation,
+                    value=field_value
                 )
                 body.append(field_assign)
                 
@@ -338,6 +355,32 @@ class ModelsGenerator:
             bases=['BaseModel'],
             body=body
         )
+
+    def _sanitize_field_name(self, original_name: str, used_names: Set[str]) -> str:
+        """Sanitize model field name and ensure uniqueness within class."""
+        base_name = IdentifierSanitizer.to_snake_case(original_name)
+        candidate = base_name
+        suffix = 2
+
+        while candidate in used_names:
+            candidate = f"{base_name}_{suffix}"
+            suffix += 1
+
+        used_names.add(candidate)
+        return candidate
+
+    def _requires_field_alias(self, schema: Dict[str, Any]) -> bool:
+        """Check if any model property needs Field(alias=...) handling."""
+        properties = schema.get('properties', {})
+        seen: Set[str] = set()
+
+        for prop_name in properties:
+            sanitized = IdentifierSanitizer.to_snake_case(prop_name)
+            if sanitized != prop_name or sanitized in seen:
+                return True
+            seen.add(sanitized)
+
+        return False
     
     def _create_field_annotation(self, prop_schema: Dict[str, Any], schemas: Dict[str, Any], is_required: bool, model_enums: Dict[str, Any] = None) -> ast.expr:
         """Create type annotation for a model field."""

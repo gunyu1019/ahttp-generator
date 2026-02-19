@@ -172,7 +172,27 @@ def apply_pep8_formatting(code: str) -> str:
         final_lines.pop()
     final_lines.append('')
 
-    return '\n'.join(final_lines)
+    formatted_code = '\n'.join(final_lines)
+
+    # Apply robust auto-formatting when available
+    try:
+        import autopep8  # type: ignore
+
+        formatted_code = autopep8.fix_code(
+            formatted_code,
+            options={
+                'aggressive': 1,
+                'max_line_length': 120,
+            }
+        )
+    except Exception:
+        # Keep baseline formatting if autopep8 is unavailable
+        pass
+
+    if not formatted_code.endswith('\n'):
+        formatted_code += '\n'
+
+    return formatted_code
 
 
 def fix_docstring_indentation(code: str) -> str:
