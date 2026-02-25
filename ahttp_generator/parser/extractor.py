@@ -9,6 +9,11 @@ Extracts relevant information from OpenAPI specification for code generation.
 from typing import Dict, Any, List, Optional, Tuple
 import re
 
+from rich.console import Console
+
+# Rich Console object for formatted output
+console = Console()
+
 
 class OpenAPIExtractor:
     """Extracts structured data from OpenAPI specification."""
@@ -386,7 +391,7 @@ class OpenAPIExtractor:
             return current
         except (KeyError, TypeError):
             # Reference not found or invalid structure
-            print(f"Warning: Could not resolve reference: {ref_path}")
+            console.print(f"[yellow]⚠️  Warning: Could not resolve reference: {ref_path}[/yellow]")
             return {}
 
     def _extract_parameters(self, operation: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -405,7 +410,7 @@ class OpenAPIExtractor:
                     resolved_parameters.append(resolved_param)
                 else:
                     # Fallback for failed resolution
-                    print(f"Warning: Failed to resolve parameter reference: {param['$ref']}")
+                    console.print(f"[yellow]⚠️  Warning: Failed to resolve parameter reference: {param['$ref']}[/yellow]")
                     fallback_param = {
                         'name': 'unknown_param',
                         'in': 'query',
@@ -868,7 +873,7 @@ class OpenAPIExtractor:
 
             else:
                 # Unknown scheme type - skip with warning
-                print(f"Warning: Unknown security scheme type '{scheme_type}' for '{scheme_name}' - skipped")
+                console.print(f"[yellow]⚠️  Warning: Unknown security scheme type '{scheme_type}' for '{scheme_name}' - skipped[/yellow]")
 
         return extracted_schemes
 
@@ -897,7 +902,7 @@ class OpenAPIExtractor:
             }
 
         else:
-            print(f"Warning: Unsupported HTTP scheme '{scheme}' for '{arg_name}' - skipped")
+            console.print(f"[yellow]⚠️  Warning: Unsupported HTTP scheme '{scheme}' for '{arg_name}' - skipped[/yellow]")
             return None
 
     def _process_apikey_scheme(self, arg_name: str, scheme_def: Dict[str, Any]) -> Dict[str, Any]:
@@ -906,7 +911,7 @@ class OpenAPIExtractor:
         key_name = scheme_def.get('name', '')
 
         if not key_name:
-            print(f"Warning: API Key scheme '{arg_name}' missing 'name' field - skipped")
+            console.print(f"[yellow]⚠️  Warning: API Key scheme '{arg_name}' missing 'name' field - skipped[/yellow]")
             return None
 
         if key_location == 'header':
@@ -938,7 +943,7 @@ class OpenAPIExtractor:
             }
 
         else:
-            print(f"Warning: Unknown API Key location '{key_location}' for '{arg_name}' - skipped")
+            console.print(f"[yellow]⚠️  Warning: Unknown API Key location '{key_location}' for '{arg_name}' - skipped[/yellow]")
             return None
 
     def _process_oauth2_scheme(self, arg_name: str, scheme_def: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -967,7 +972,7 @@ class OpenAPIExtractor:
 
         # Other OAuth2 flows not supported yet
         supported_flows = list(flows.keys()) if flows else []
-        print(f"Warning: OAuth2 flows {supported_flows} not supported for '{arg_name}' - only clientCredentials is supported")
+        console.print(f"[yellow]⚠️  Warning: OAuth2 flows {supported_flows} not supported for '{arg_name}' - only clientCredentials is supported[/yellow]")
         return []
 
     def _deduplicate_function_names(self, operations: List[Dict[str, Any]]) -> None:
@@ -1019,7 +1024,7 @@ class OpenAPIExtractor:
         # for operation in operations:
         #     func_name = operation['func_name']
         #     if func_name in used_names:
-        #         print(f"ERROR: Deduplication failed - '{func_name}' is still duplicated!")
+        #         console.print(f"[bold red]ERROR: Deduplication failed - '{func_name}' is still duplicated![/bold red]")
         #     used_names.add(func_name)
 
     def _extract_enums(self, spec: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
