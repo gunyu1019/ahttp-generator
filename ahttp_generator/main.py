@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 gunyu1019
+# Licensed under the MIT License. See LICENSE file in the project root for details.
+
 """
 OpenAPI to ahttp_client Package Generator
 CLI tool that generates a complete Python package from an OpenAPI Specification.

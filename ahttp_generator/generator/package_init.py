@@ -1,3 +1,6 @@
+# Copyright (c) 2026 gunyu1019
+# Licensed under the MIT License. See LICENSE file in the project root for details.
+
 """
 Package __init__.py generator module.
 Generates __init__.py for the generated package with proper exports.

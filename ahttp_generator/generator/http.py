@@ -1,3 +1,6 @@
+# Copyright (c) 2026 gunyu1019
+# Licensed under the MIT License. See LICENSE file in the project root for details.
+
 """
 HTTP implementation generator module.
 Generates HTTP implementation class from OpenAPI specification (Implementation Layer).

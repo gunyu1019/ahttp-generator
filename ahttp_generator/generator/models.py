@@ -1,3 +1,6 @@
+# Copyright (c) 2026 gunyu1019
+# Licensed under the MIT License. See LICENSE file in the project root for details.
+
 """
 Pydantic models generator module.
 Generates individual model files with Pydantic BaseModel classes from OpenAPI schemas.
