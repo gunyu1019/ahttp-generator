@@ -49,7 +49,7 @@ setup(
     install_requires=requirements,
     entry_points={
         "console_scripts": [
-            "ahttp-gen=ahttp_generator.main:main",
+            "ahttp-generator=ahttp_generator.main:main",
         ],
     },
     keywords="openapi, sdk, generator, async, http, client, ahttp",
