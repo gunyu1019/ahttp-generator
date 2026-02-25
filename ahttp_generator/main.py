@@ -12,6 +12,9 @@ import ast
 import pathlib
 from typing import Sequence
 
+from rich.console import Console
+from rich.panel import Panel
+
 from .core.loader import load_spec
 from .parser.extractor import OpenAPIExtractor
 from .generator.models import ModelsGenerator
@@ -19,6 +22,9 @@ from .generator.client import ClientGenerator
 from .generator.package_init import PackageInitGenerator
 from .generator.exceptions import ExceptionsGenerator
 from .generator.http import HTTPGenerator
+
+# Rich Console object creation
+console = Console()
 
 
 def write_ast_to_file(file_path: str, module_ast: ast.Module) -> None:
@@ -299,37 +305,61 @@ class MainController:
         self.output_dir = output_dir
 
     def run(self) -> None:
-        print(f"Loading OpenAPI specification from {self.input_file}")
-        spec_data = load_spec(self.input_file)
+        # Project startup banner
+        console.print(Panel.fit(
+            "[bold cyan]🚀 ahttp-generator v1.0.0[/bold cyan]\n"
+            "[dim]Converting OpenAPI Specification to ahttp_client package[/dim]",
+            title="[bold]AHTTP GENERATOR[/bold]"
+        ))
+        console.print()
 
-        print("Extracting OpenAPI components")
-        extractor = OpenAPIExtractor()
-        extracted_data = extractor.extract(spec_data)
+        # Loading OpenAPI spec
+        with console.status("[bold cyan]📄 Loading OpenAPI specification...[/bold cyan]", spinner="dots"):
+            spec_data = load_spec(self.input_file)
+        console.print(f"[green]✓[/green] OpenAPI specification loaded successfully: [dim]{self.input_file}[/dim]")
 
-        print("Generating model files")
-        models_generator = ModelsGenerator()
-        model_modules, model_names = models_generator.generate(extracted_data)
+        # Extracting components
+        with console.status("[bold cyan]⚙️ Extracting OpenAPI components...[/bold cyan]", spinner="dots"):
+            extractor = OpenAPIExtractor()
+            extracted_data = extractor.extract(spec_data)
+        console.print("[green]✓[/green] OpenAPI components extraction completed")
 
-        print("Generating exception files")
-        exceptions_generator = ExceptionsGenerator()
-        exception_modules = exceptions_generator.generate(extracted_data)
+        # Generating model files
+        with console.status("[bold cyan]📝 Generating model files...[/bold cyan]", spinner="dots"):
+            models_generator = ModelsGenerator()
+            model_modules, model_names = models_generator.generate(extracted_data)
+        console.print("[green]✓[/green] Model files generation completed")
 
-        print("Generating http.py")
-        http_generator = HTTPGenerator()
-        http_ast = http_generator.generate(extracted_data, model_names)
+        # Generating exception files
+        with console.status("[bold cyan]⚠️ Generating exception classes...[/bold cyan]", spinner="dots"):
+            exceptions_generator = ExceptionsGenerator()
+            exception_modules = exceptions_generator.generate(extracted_data)
+        console.print("[green]✓[/green] Exception files generation completed")
 
-        print("Generating client.py")
-        client_generator = ClientGenerator()
-        client_ast = client_generator.generate(extracted_data, model_names)
+        # Generating HTTP utilities
+        with console.status("[bold cyan]🌐 Generating HTTP utilities...[/bold cyan]", spinner="dots"):
+            http_generator = HTTPGenerator()
+            http_ast = http_generator.generate(extracted_data, model_names)
+        console.print("[green]✓[/green] HTTP utilities generation completed")
 
-        print("Generating __init__.py")
-        init_generator = PackageInitGenerator()
-        init_ast = init_generator.generate(extracted_data, model_names)
+        # Generating client
+        with console.status("[bold cyan]🔧 Generating client code...[/bold cyan]", spinner="dots"):
+            client_generator = ClientGenerator()
+            client_ast = client_generator.generate(extracted_data, model_names)
+        console.print("[green]✓[/green] Client code generation completed")
 
+        # Generating package initialization file
+        with console.status("[bold cyan]📦 Generating package initialization file...[/bold cyan]", spinner="dots"):
+            init_generator = PackageInitGenerator()
+            init_ast = init_generator.generate(extracted_data, model_names)
+        console.print("[green]✓[/green] Package initialization file generation completed")
+
+        # Writing to file system
         output_path = pathlib.Path(self.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        print(f"Writing package files to {output_path}")
+        console.print()
+        console.print(f"[bold blue]💾 Writing package files...[/bold blue] [dim]({output_path})[/dim]")
 
         models_dir = output_path / 'models'
         models_dir.mkdir(parents=True, exist_ok=True)
@@ -337,27 +367,29 @@ class MainController:
         for filename, module_ast in model_modules.items():
             model_file = models_dir / filename
             write_ast_to_file(str(model_file), module_ast)
-            print(f"  + {model_file}")
+            console.print(f"  [dim]✓[/dim] {model_file}")
 
         for exception_file, exception_module in exception_modules.items():
             exception_path = output_path / exception_file
             write_ast_to_file(str(exception_path), exception_module)
-            print(f"  + {exception_path}")
+            console.print(f"  [dim]✓[/dim] {exception_path}")
 
         http_file = output_path / 'http.py'
         write_ast_to_file(str(http_file), http_ast)
-        print(f"  + {http_file}")
+        console.print(f"  [dim]✓[/dim] {http_file}")
 
         client_file = output_path / 'client.py'
         write_ast_to_file(str(client_file), client_ast)
-        print(f"  + {client_file}")
+        console.print(f"  [dim]✓[/dim] {client_file}")
 
         init_file = output_path / '__init__.py'
         write_ast_to_file(str(init_file), init_ast)
-        print(f"  + {init_file}")
+        console.print(f"  [dim]✓[/dim] {init_file}")
 
-        print(f"Package '{self.output_dir}' generated successfully.")
-        print(f"You can now use: from {self.output_dir} import *")
+        console.print()
+        console.print("[bold green]✨ Package generated successfully! ✅[/bold green]")
+        console.print(f"[dim]📁 Output location: {self.output_dir}[/dim]")
+        console.print(f"[dim]💡 Usage: from {self.output_dir} import *[/dim]")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -388,11 +420,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         controller.run()
         return 0
     except FileNotFoundError as exc:
-        print(f"Error: input file not found - {exc}")
+        console.print(f"[bold red]🚨 Error: Input file not found.[/bold red]")
+        console.print(f"[dim red]File path: {exc}[/dim red]")
     except ValueError as exc:
-        print(f"Error: invalid OpenAPI specification - {exc}")
+        console.print(f"[bold red]❌ Error: Invalid OpenAPI specification.[/bold red]")
+        console.print(f"[dim red]Details: {exc}[/dim red]")
     except Exception as exc:
-        print(f"Error: generation failed - {exc}")
+        console.print(f"[bold red]💥 Unexpected error occurred.[/bold red]")
+        console.print(f"[dim red]Error details: {exc}[/dim red]")
     return 1
 
 
