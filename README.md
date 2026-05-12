@@ -13,13 +13,13 @@ Python 3.10 or higher is required.
 $ pip install ahttp-generator
 
 # Windows
-$ py -3 -m pip install chzzkpy
+$ py -3 -m pip install ahttp-generator
 ```
 To install the development version.
 
 ```bash
 $ git clone https://github.com/gunyu1019/ahttp-generator.git -b develop
-$ cd chzzkpy
+$ cd ahttp-generator
 $ python3 -m pip install -U .
 ```
 ---
